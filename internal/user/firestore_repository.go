@@ -81,38 +81,20 @@ func (r *FirestoreRepository) UpdateUserStatus(ctx context.Context, id string, s
 	return nil
 }
 
+// DeleteUser removes this user's own records: their profile document and their root
+// user document. It does NOT touch chat sessions/messages or personal-intelligence
+// memory — those live in the chat module's Firestore collections, so cascading them
+// on user deletion is the user.Service's job (it calls into domain.ChatRepository for
+// that), not this repository's. Keeping that here would mean duplicating knowledge of
+// the chat module's collection names in a package that shouldn't need it, and would
+// silently skip that cleanup entirely when the app runs against an in-memory user
+// repository (e.g. local dev) with a Firestore-backed one hard-coded here.
 func (r *FirestoreRepository) DeleteUser(ctx context.Context, id string) error {
 	// 1. Delete associated profile documents
 	_, _ = r.client.Collection(fs.CollectionStudentProfiles).Doc(id).Delete(ctx)
 	_, _ = r.client.Collection(fs.CollectionStaffProfiles).Doc(id).Delete(ctx)
 
-	// 2. Delete student memory context document
-	_, _ = r.client.Collection("student_memories").Doc(id).Delete(ctx)
-
-	// 3. Cascade delete all chat sessions and messages authored by this student
-	sessIter := r.client.Collection("chat_sessions").Where("student_id", "==", id).Documents(ctx)
-	for {
-		sDoc, err := sessIter.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			break
-		}
-		sessionID := sDoc.Ref.ID
-		// Delete all messages belonging to this session
-		msgIter := r.client.Collection("chat_messages").Where("session_id", "==", sessionID).Documents(ctx)
-		for {
-			mDoc, mErr := msgIter.Next()
-			if mErr == iterator.Done || mErr != nil {
-				break
-			}
-			_, _ = mDoc.Ref.Delete(ctx)
-		}
-		_, _ = sDoc.Ref.Delete(ctx)
-	}
-
-	// 4. Delete root user document
+	// 2. Delete root user document
 	_, err := r.client.Collection(fs.CollectionUsers).Doc(id).Delete(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to delete user document: %w", err)

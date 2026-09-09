@@ -3,7 +3,9 @@ package user_test
 import (
 	"context"
 	"testing"
+	"time"
 
+	chatModule "buddy/server/internal/chat"
 	"buddy/server/internal/domain"
 	platformAuth "buddy/server/internal/platform/auth"
 	"buddy/server/internal/user"
@@ -12,7 +14,7 @@ import (
 func setupTestService() *user.Service {
 	repo := user.NewMemoryRepository()
 	authClient := platformAuth.NewDevAuthClient()
-	return user.NewService(repo, authClient)
+	return user.NewService(repo, authClient, chatModule.NewMemoryChatRepository())
 }
 
 func TestService_CreateStudent(t *testing.T) {
@@ -111,5 +113,78 @@ func TestService_UpdateStatus(t *testing.T) {
 
 	if student.Status != domain.StatusSuspended {
 		t.Errorf("expected status suspended, got %s", student.Status)
+	}
+}
+
+func TestService_DeleteUser_CascadesChatData(t *testing.T) {
+	// This test wires its own chatRepo (rather than using setupTestService) so it can
+	// inspect the chat repository directly after deletion.
+	repo := user.NewMemoryRepository()
+	authClient := platformAuth.NewDevAuthClient()
+	chatRepo := chatModule.NewMemoryChatRepository()
+	svc := user.NewService(repo, authClient, chatRepo)
+	ctx := context.Background()
+
+	created, err := svc.CreateStudent(ctx, domain.CreateStudentRequest{
+		Email:              "delete.cascade@example.com",
+		Password:           "password123",
+		DisplayName:        "Delete Cascade",
+		RegistrationNumber: "STU-003",
+		Grade:              "9th Grade",
+	})
+	if err != nil {
+		t.Fatalf("failed to create student: %v", err)
+	}
+
+	session := &domain.ChatSession{
+		ID:        "session-1",
+		StudentID: created.ID,
+		Title:     "Test Session",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	if err := chatRepo.CreateSession(ctx, session); err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+	message := &domain.ChatMessage{
+		ID:        "message-1",
+		SessionID: session.ID,
+		Sender:    domain.SenderUser,
+		Content:   "hello",
+		CreatedAt: time.Now(),
+	}
+	if err := chatRepo.SaveMessage(ctx, message); err != nil {
+		t.Fatalf("failed to save message: %v", err)
+	}
+	if err := chatRepo.SavePersonalIntelligence(ctx, &domain.StudentPersonalIntelligence{StudentID: created.ID}); err != nil {
+		t.Fatalf("failed to save personal intelligence: %v", err)
+	}
+
+	if err := svc.DeleteUser(ctx, created.ID); err != nil {
+		t.Fatalf("failed to delete user: %v", err)
+	}
+
+	if _, err := svc.GetStudent(ctx, created.ID); err == nil {
+		t.Error("expected student record to be deleted")
+	}
+
+	sessions, err := chatRepo.ListSessions(ctx, created.ID, 20)
+	if err != nil {
+		t.Fatalf("failed to list sessions: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Errorf("expected no chat sessions to remain after user deletion, got %d", len(sessions))
+	}
+
+	messages, err := chatRepo.ListMessages(ctx, session.ID, 20)
+	if err != nil {
+		t.Fatalf("failed to list messages: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Errorf("expected no chat messages to remain after user deletion, got %d", len(messages))
+	}
+
+	if _, err := chatRepo.GetPersonalIntelligence(ctx, created.ID); err == nil {
+		t.Error("expected personal intelligence memory to be deleted")
 	}
 }

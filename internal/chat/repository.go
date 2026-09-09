@@ -81,6 +81,16 @@ func (r *FirestoreChatRepository) UpdateSession(ctx context.Context, session *do
 
 func (r *FirestoreChatRepository) DeleteSession(ctx context.Context, sessionID string) error {
 	// Cascade delete all messages associated with this session
+	r.deleteMessagesBySession(ctx, sessionID)
+
+	_, err := r.client.Collection(CollectionChatSessions).Doc(sessionID).Delete(ctx)
+	return err
+}
+
+// deleteMessagesBySession removes every message belonging to a session. Firestore has
+// no cascading delete of its own, so this always has to be done explicitly before (or
+// alongside) removing the session document itself.
+func (r *FirestoreChatRepository) deleteMessagesBySession(ctx context.Context, sessionID string) {
 	msgIter := r.client.Collection(CollectionChatMessages).Where("session_id", "==", sessionID).Documents(ctx)
 	for {
 		doc, err := msgIter.Next()
@@ -92,9 +102,26 @@ func (r *FirestoreChatRepository) DeleteSession(ctx context.Context, sessionID s
 		}
 		_, _ = doc.Ref.Delete(ctx)
 	}
+}
 
-	_, err := r.client.Collection(CollectionChatSessions).Doc(sessionID).Delete(ctx)
-	return err
+// DeleteSessionsByStudent cascades to every session (and each session's messages)
+// belonging to studentID. Used when a user account is deleted so no chat history is
+// left behind. Unlike ListSessions, this is not bounded by the 50-item API page-size
+// cap — a user with more sessions than that must still be fully cleaned up.
+func (r *FirestoreChatRepository) DeleteSessionsByStudent(ctx context.Context, studentID string) error {
+	sessIter := r.client.Collection(CollectionChatSessions).Where("student_id", "==", studentID).Documents(ctx)
+	for {
+		doc, err := sessIter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		r.deleteMessagesBySession(ctx, doc.Ref.ID)
+		_, _ = doc.Ref.Delete(ctx)
+	}
+	return nil
 }
 
 func (r *FirestoreChatRepository) SaveMessage(ctx context.Context, message *domain.ChatMessage) error {
@@ -155,6 +182,11 @@ func (r *FirestoreChatRepository) GetPersonalIntelligence(ctx context.Context, s
 func (r *FirestoreChatRepository) SavePersonalIntelligence(ctx context.Context, memory *domain.StudentPersonalIntelligence) error {
 	memory.UpdatedAt = time.Now()
 	_, err := r.client.Collection(CollectionStudentMemories).Doc(memory.StudentID).Set(ctx, memory)
+	return err
+}
+
+func (r *FirestoreChatRepository) DeletePersonalIntelligence(ctx context.Context, studentID string) error {
+	_, err := r.client.Collection(CollectionStudentMemories).Doc(studentID).Delete(ctx)
 	return err
 }
 
@@ -283,6 +315,18 @@ func (m *MemoryChatRepository) DeleteSession(ctx context.Context, sessionID stri
 	return nil
 }
 
+func (m *MemoryChatRepository) DeleteSessionsByStudent(ctx context.Context, studentID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, s := range m.sessions {
+		if s.StudentID == studentID {
+			delete(m.sessions, id)
+			delete(m.messages, id)
+		}
+	}
+	return nil
+}
+
 func (m *MemoryChatRepository) SaveMessage(ctx context.Context, message *domain.ChatMessage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -328,6 +372,13 @@ func (m *MemoryChatRepository) SavePersonalIntelligence(ctx context.Context, mem
 	defer m.mu.Unlock()
 	memory.UpdatedAt = time.Now()
 	m.memories[memory.StudentID] = memory
+	return nil
+}
+
+func (m *MemoryChatRepository) DeletePersonalIntelligence(ctx context.Context, studentID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.memories, studentID)
 	return nil
 }
 

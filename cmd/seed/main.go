@@ -41,7 +41,9 @@ func main() {
 	defer fsClient.Close()
 
 	userRepo := user.NewFirestoreRepository(fsClient)
-	userService := user.NewService(userRepo, authClient)
+	// nil chatRepo: this seeding tool only ever creates accounts, never deletes them,
+	// so DeleteUser's chat-data cascade (which nil-checks this) is never exercised here.
+	userService := user.NewService(userRepo, authClient, nil)
 
 	fmt.Printf("Creating %s account [%s]...\n", *role, *email)
 

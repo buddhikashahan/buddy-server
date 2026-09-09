@@ -17,13 +17,19 @@ import (
 type Service struct {
 	repo       domain.UserRepository
 	authClient domain.AuthClient
+	// chatRepo cascades chat sessions, messages, and personal-intelligence memory when
+	// a user is deleted. It's optional (may be nil, e.g. in tests that construct a
+	// Service directly) so DeleteUser degrades to leaving that data behind rather than
+	// panicking when it isn't wired up.
+	chatRepo domain.ChatRepository
 }
 
 // NewService instantiates a new user service.
-func NewService(repo domain.UserRepository, authClient domain.AuthClient) *Service {
+func NewService(repo domain.UserRepository, authClient domain.AuthClient, chatRepo domain.ChatRepository) *Service {
 	return &Service{
 		repo:       repo,
 		authClient: authClient,
+		chatRepo:   chatRepo,
 	}
 }
 
@@ -357,11 +363,27 @@ func (s *Service) UpdateStatus(ctx context.Context, id string, status domain.Use
 	return nil
 }
 
-// DeleteUser removes a user account from database and identity provider.
+// DeleteUser removes a user account, its profile, and every piece of data associated
+// with it: chat sessions and their messages, personal-intelligence memory, and the
+// Firebase Auth identity itself. Chat data is cascaded first (deleting the user record
+// first and then failing partway through the cascade would leave orphaned chat data
+// with no owner left to retry the cleanup against).
 func (s *Service) DeleteUser(ctx context.Context, id string) error {
 	if id == "" {
 		return domain.ErrInvalidInput
 	}
+
+	if s.chatRepo != nil {
+		// Only students have chat sessions/memory today, but this is harmless to run
+		// for teacher/admin accounts too — it's simply a no-op for them.
+		if err := s.chatRepo.DeleteSessionsByStudent(ctx, id); err != nil {
+			return fmt.Errorf("failed to delete chat sessions: %w", err)
+		}
+		if err := s.chatRepo.DeletePersonalIntelligence(ctx, id); err != nil {
+			return fmt.Errorf("failed to delete personal intelligence memory: %w", err)
+		}
+	}
+
 	if err := s.repo.DeleteUser(ctx, id); err != nil {
 		return err
 	}

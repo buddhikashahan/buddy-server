@@ -86,6 +86,10 @@ type ChatRepository interface {
 	ListSessions(ctx context.Context, studentID string, limit int) ([]*ChatSession, error)
 	UpdateSession(ctx context.Context, session *ChatSession) error
 	DeleteSession(ctx context.Context, sessionID string) error
+	// DeleteSessionsByStudent cascades to every session (and each session's messages)
+	// belonging to studentID, unbounded by the page-size limit ListSessions enforces.
+	// Used when a user account is deleted so no chat history is left orphaned.
+	DeleteSessionsByStudent(ctx context.Context, studentID string) error
 
 	// Messages
 	SaveMessage(ctx context.Context, message *ChatMessage) error
@@ -95,6 +99,7 @@ type ChatRepository interface {
 	// Personal Intelligence Memory
 	GetPersonalIntelligence(ctx context.Context, studentID string) (*StudentPersonalIntelligence, error)
 	SavePersonalIntelligence(ctx context.Context, memory *StudentPersonalIntelligence) error
+	DeletePersonalIntelligence(ctx context.Context, studentID string) error
 
 	// System Prompts
 	GetActivePrompt(ctx context.Context) (*SystemPrompt, error)

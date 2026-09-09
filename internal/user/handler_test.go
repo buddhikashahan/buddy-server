@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	chatModule "buddy/server/internal/chat"
 	"buddy/server/internal/domain"
 	"buddy/server/internal/middleware"
 	platformAuth "buddy/server/internal/platform/auth"
@@ -18,7 +19,7 @@ import (
 func setupTestRouter() http.Handler {
 	repo := user.NewMemoryRepository()
 	authClient := platformAuth.NewDevAuthClient()
-	svc := user.NewService(repo, authClient)
+	svc := user.NewService(repo, authClient, chatModule.NewMemoryChatRepository())
 	h := user.NewHandler(svc)
 
 	r := chi.NewRouter()

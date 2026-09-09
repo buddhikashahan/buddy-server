@@ -127,7 +127,7 @@ func main() {
 	ragHandler := ragModule.NewHandler(ragService)
 
 	// 5. Initialize Services and Handlers
-	userService := user.NewService(userRepo, authClient)
+	userService := user.NewService(userRepo, authClient, chatRepo)
 	batchService := batchModule.NewService(batchRepo)
 	chatService := chatHandler.NewService(chatRepo, vertexClient, ragService)
 
