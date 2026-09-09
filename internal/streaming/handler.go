@@ -222,6 +222,9 @@ Directives for Spoken Live Conversation:
 - When the student asks about foundation course notes, engineering syllabus, workshop guidelines, or study materials, call the tool "query_foundation_knowledge".
 - When the student asks about past details or you genuinely need specific background context to assist them, call the tool "recall_student_memory".
 
+### 🎙️ TRANSCRIPT LOGGING TOOL (CRITICAL — DO THIS EVERY TURN, NO EXCEPTIONS):
+Call the tool "record_user_message" for EVERY turn the student speaks, however short (even "yes", "okay", or "hmm"). Pass your own accurate understanding of exactly what they said, in the language they said it in. Do this before or alongside your spoken reply — never skip it. This is the only way their side of the conversation is saved to their chat history, so a missed call means that turn is lost permanently.
+
 ### 🧠 STUDENT PERSONAL MEMORY TOOL — STRICT RULES:
 You have access to the function "save_student_memory". Use it ONLY to save genuine, durable personal facts.
 
@@ -273,7 +276,14 @@ You have access to the function "save_student_memory". Use it ONLY to save genui
 					genai.NewPartFromText(liveSystemPrompt),
 				},
 			},
-			Tools:                    []*genai.Tool{platformVertex.LiveTalkToolsDeclaration()},
+			Tools: []*genai.Tool{platformVertex.LiveTalkToolsDeclaration()},
+			// The student's side of the conversation is captured via the
+			// "record_user_message" function call instead of InputAudioTranscription:
+			// that automatic ASR-based transcription proved unreliable (especially
+			// across languages/accents), whereas having the model itself report what
+			// it understood the student to have said is far more accurate. The
+			// model's own spoken replies, by contrast, are reliably transcribed by
+			// OutputAudioTranscription, so that one stays.
 			OutputAudioTranscription: &genai.AudioTranscriptionConfig{},
 		}
 
@@ -385,6 +395,9 @@ You have access to the function "save_student_memory". Use it ONLY to save genui
 							Type:    "turn_complete",
 							IsFinal: true,
 						})
+						// The student's turn was already saved via the
+						// "record_user_message" tool call as soon as the model made
+						// it — flushing here only covers Buddy's own reply.
 						if modelTurnBuilder.Len() > 0 {
 							recordModelTurn(modelTurnBuilder.String())
 							modelTurnBuilder.Reset()
@@ -400,6 +413,27 @@ You have access to the function "save_student_memory". Use it ONLY to save genui
 							continue
 						}
 						switch fc.Name {
+						case "record_user_message":
+							text := ""
+							if v, ok := fc.Args["text"].(string); ok {
+								text = v
+							}
+
+							slog.Info("[Live Talk Tool Call] Recorded user transcript", slog.String("student_id", authUser.UID))
+							// Fire-and-forget, same as save_student_memory below: the
+							// live audio streaming loop must never stall on a Firestore
+							// write.
+							go recordUserTurn(text)
+
+							responses = append(responses, &genai.FunctionResponse{
+								ID:   fc.ID,
+								Name: fc.Name,
+								Response: map[string]any{
+									"status": "success",
+									"logged": true,
+								},
+							})
+
 						case "save_student_memory":
 							category := ""
 							fact := ""
@@ -428,7 +462,7 @@ You have access to the function "save_student_memory". Use it ONLY to save genui
 								Response: map[string]any{
 									"status":  "success",
 									"saved":   true,
-									"message": "Student personal memory context successfully saved to personal intelligence profile and indexed in RAG database.",
+									"message": "Student personal memory context successfully saved to personal intelligence profile.",
 								},
 							})
 

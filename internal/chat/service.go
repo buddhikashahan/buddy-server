@@ -16,11 +16,6 @@ import (
 	"buddy/server/pkg/validator"
 )
 
-// RAGDocumentIngester defines optional document ingestion support for RAG engines.
-type RAGDocumentIngester interface {
-	IngestDocument(ctx context.Context, authorID string, req domain.CreateDocumentRequest) (*domain.KnowledgeDocument, error)
-}
-
 // Service coordinates AI Chat, Personal Intelligence, RAG, and System Prompts.
 type Service struct {
 	repo         domain.ChatRepository
@@ -438,7 +433,11 @@ func (s *Service) DeletePersonalMemoryFact(ctx context.Context, studentID string
 }
 
 // SavePersonalMemoryFact records a specific personal fact for a student into both Firestore Personal Intelligence
-// and embeds/indexes it into the RAG knowledge base in real time.
+// (this is the only place a memory fact is persisted — see the comment above the
+// SavePersonalIntelligence call below for why it must never also reach the RAG
+// knowledge base). details is currently unused by this method itself but is kept in
+// the signature since callers (chat.Service's Gemini function-calling tool, and
+// streaming's Live Talk equivalent) already pass it through as a tool argument.
 func (s *Service) SavePersonalMemoryFact(ctx context.Context, studentID, category, fact, details string) error {
 	if strings.TrimSpace(studentID) == "" || strings.TrimSpace(fact) == "" {
 		return nil
@@ -446,7 +445,6 @@ func (s *Service) SavePersonalMemoryFact(ctx context.Context, studentID, categor
 
 	category = strings.TrimSpace(strings.ToLower(category))
 	fact = strings.TrimSpace(fact)
-	details = strings.TrimSpace(details)
 
 	// Filter out non-factual, conversational, or meta statements
 	if isInvalidOrMetaFact(fact) {
@@ -513,30 +511,17 @@ func (s *Service) SavePersonalMemoryFact(ctx context.Context, studentID, categor
 	mem.ExtractedFacts = DeduplicateFacts(append(mem.ExtractedFacts, fact))
 	mem.UpdatedAt = time.Now()
 
-	// 3. Save updated intelligence to Firestore
+	// 3. Save updated intelligence to Firestore. This is the only place a memory fact
+	// is persisted — it must never also be ingested into the RAG knowledge base (an
+	// earlier version of this method did that as a step 4 here). The RAG store is
+	// curriculum content an admin or teacher deliberately uploads to ground Buddy's
+	// answers; it isn't a place for per-student facts extracted during a
+	// conversation to leak into, where they'd show up mixed in among real course
+	// materials on the knowledge base management screen for every admin to see.
 	if err := s.repo.SavePersonalIntelligence(ctx, mem); err != nil {
 		slog.Error("[Memory Persistence] Failed to save personal intelligence", slog.String("student_id", studentID), slog.String("error", err.Error()))
 	} else {
 		slog.Info(fmt.Sprintf("[Memory Persistence] Recorded memory: [%s] %s", category, fact), slog.String("student_id", studentID))
-	}
-
-	// 4. Ingest fact into RAG vector repository
-	if s.ragEngine != nil {
-		if ingester, ok := s.ragEngine.(RAGDocumentIngester); ok {
-			ragContent := fmt.Sprintf("Student Personal Intelligence\nStudentID: %s\nCategory: %s\nFact: %s\nDetails: %s", studentID, category, fact, details)
-			_, rErr := ingester.IngestDocument(ctx, studentID, domain.CreateDocumentRequest{
-				Title:      fmt.Sprintf("Student Memory: %s", fact),
-				Subject:    "Student Personal Intelligence",
-				Tags:       []string{"student_memory", studentID, category},
-				Content:    ragContent,
-				AuthorName: "Buddy AI Function Calling",
-			})
-			if rErr != nil {
-				slog.Warn("[Memory Persistence] RAG ingestion warning", slog.String("student_id", studentID), slog.String("error", rErr.Error()))
-			} else {
-				slog.Info(fmt.Sprintf("[RAG] Indexed memory chunk into vector store: %s", fact), slog.String("student_id", studentID))
-			}
-		}
 	}
 
 	return nil

@@ -60,12 +60,32 @@ func MemoryToolDeclaration() *genai.Tool {
 }
 
 // LiveTalkToolsDeclaration returns the full tool declaration for real-time Gemini Live sessions:
-// 1. save_student_memory: saves new persistent facts
-// 2. query_foundation_knowledge: retrieves Foundation syllabus, course notes, and engineering guidelines from RAG
-// 3. recall_student_memory: retrieves specific background or past facts about the student on-demand
+// 1. record_user_message: logs an accurate transcript of what the student just said, for chat history
+// 2. save_student_memory: saves new persistent facts
+// 3. query_foundation_knowledge: retrieves Foundation syllabus, course notes, and engineering guidelines from RAG
+// 4. recall_student_memory: retrieves specific background or past facts about the student on-demand
 func LiveTalkToolsDeclaration() *genai.Tool {
 	return &genai.Tool{
 		FunctionDeclarations: []*genai.FunctionDeclaration{
+			{
+				Name: "record_user_message",
+				Description: "Log an accurate transcript of what the student just said in this turn, so it can be saved to " +
+					"their chat history. Call this for EVERY user turn, however short, before or alongside your spoken reply. " +
+					"This is the model's own understanding of the student's words, not raw speech-to-text — use it because " +
+					"automatic audio transcription is unreliable, especially across languages and accents.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"text": {
+							Type: genai.TypeString,
+							Description: "The student's words in this turn, transcribed as accurately as possible in " +
+								"whichever language they spoke (Sinhala, English, Tamil, etc.). Preserve their meaning and " +
+								"phrasing rather than summarizing or paraphrasing it away.",
+						},
+					},
+					Required: []string{"text"},
+				},
+			},
 			{
 				Name: "save_student_memory",
 				Description: "Automatically save and record NEW, unique personal facts, background details, family context, " +

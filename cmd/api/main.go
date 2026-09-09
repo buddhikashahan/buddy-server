@@ -16,6 +16,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	announcementModule "buddy/server/internal/announcement"
 	authHandler "buddy/server/internal/auth"
 	batchModule "buddy/server/internal/batch"
 	chatHandler "buddy/server/internal/chat"
@@ -27,6 +28,7 @@ import (
 	platformVertex "buddy/server/internal/platform/vertex"
 	ragModule "buddy/server/internal/rag"
 	"buddy/server/internal/streaming"
+	subjectModule "buddy/server/internal/subject"
 	"buddy/server/internal/user"
 	"buddy/server/pkg/logger"
 )
@@ -66,6 +68,8 @@ func main() {
 	var userRepo domain.UserRepository
 	var chatRepo domain.ChatRepository
 	var batchRepo domain.BatchRepository
+	var subjectRepo domain.SubjectRepository
+	var announcementRepo domain.AnnouncementRepository
 
 	if cfg.FirebaseKeyPath != "" || (!cfg.AuthDevMode && cfg.GCPProjectID != "") {
 		fsClient, err = platformFirestore.NewClient(ctx, cfg.GCPProjectID, cfg.FirestoreDBID, cfg.FirebaseKeyPath)
@@ -74,18 +78,24 @@ func main() {
 			userRepo = user.NewMemoryRepository()
 			chatRepo = chatHandler.NewMemoryChatRepository()
 			batchRepo = batchModule.NewMemoryBatchRepository()
+			subjectRepo = subjectModule.NewMemorySubjectRepository()
+			announcementRepo = announcementModule.NewMemoryAnnouncementRepository()
 		} else {
 			defer fsClient.Close()
 			log.Info("Firestore client initialized successfully")
 			userRepo = user.NewFirestoreRepository(fsClient)
 			chatRepo = chatHandler.NewFirestoreChatRepository(fsClient)
 			batchRepo = batchModule.NewFirestoreBatchRepository(fsClient)
+			subjectRepo = subjectModule.NewFirestoreSubjectRepository(fsClient)
+			announcementRepo = announcementModule.NewFirestoreAnnouncementRepository(fsClient)
 		}
 	} else {
 		log.Info("Running with in-memory repositories for local development")
 		userRepo = user.NewMemoryRepository()
 		chatRepo = chatHandler.NewMemoryChatRepository()
 		batchRepo = batchModule.NewMemoryBatchRepository()
+		subjectRepo = subjectModule.NewMemorySubjectRepository()
+		announcementRepo = announcementModule.NewMemoryAnnouncementRepository()
 	}
 
 	// 3. Initialize Vertex AI Client (Gemini 2.5 Flash & Text Embedding 004)
@@ -130,11 +140,15 @@ func main() {
 	userService := user.NewService(userRepo, authClient, chatRepo)
 	batchService := batchModule.NewService(batchRepo)
 	chatService := chatHandler.NewService(chatRepo, vertexClient, ragService)
+	subjectService := subjectModule.NewService(subjectRepo)
+	announcementService := announcementModule.NewService(announcementRepo)
 
 	uHandler := user.NewHandler(userService)
 	bHandler := batchModule.NewHandler(batchService)
 	aHandler := authHandler.NewHandler(authClient, userRepo)
 	cHandler := chatHandler.NewHandler(chatService)
+	subjectHandler := subjectModule.NewHandler(subjectService)
+	announcementHandler := announcementModule.NewHandler(announcementService)
 	liveHandler := streaming.NewHandler(authClient, vertexClient, chatService, ragService, cfg.AuthDevMode)
 
 	// 6. Router & Middleware Stack
@@ -267,16 +281,59 @@ func main() {
 			// ==========================================
 			// RAG Knowledge Base & Notes Module
 			// ==========================================
+			// Admin-only: this is the platform's curated grounding content, curated
+			// deliberately rather than opened up to every teacher. Buddy's own chat
+			// grounding (chat.Service calling ragEngine.RetrieveContext in-process)
+			// doesn't go through this HTTP API at all, so locking these routes down
+			// doesn't affect what students or teachers get out of Buddy AI chat —
+			// only who can manage the documents behind it.
 			r.Route("/rag", func(r chi.Router) {
-				// Document Ingestion & Management (Admin & Teachers)
-				r.With(middleware.RequireRoles(domain.RoleAdmin, domain.RoleTeacher)).Post("/documents", ragHandler.IngestDocument)
-				r.With(middleware.RequireRoles(domain.RoleAdmin, domain.RoleTeacher)).Post("/upload", ragHandler.UploadDocument)
+				r.Use(middleware.RequireRoles(domain.RoleAdmin))
+
+				r.Post("/documents", ragHandler.IngestDocument)
+				r.Post("/upload", ragHandler.UploadDocument)
 				r.Get("/documents", ragHandler.ListDocuments)
 				r.Get("/documents/{id}", ragHandler.GetDocument)
-				r.With(middleware.RequireRoles(domain.RoleAdmin, domain.RoleTeacher)).Delete("/documents/{id}", ragHandler.DeleteDocument)
-
-				// Semantic Vector Search (Direct Testing)
+				r.Delete("/documents/{id}", ragHandler.DeleteDocument)
 				r.Post("/search", ragHandler.Search)
+			})
+
+			// ==========================================
+			// Subjects Module (LMS): shared content areas any teacher/admin can
+			// publish notes into, and any signed-in user can browse — not scoped to
+			// a batch or owned by a single teacher.
+			// ==========================================
+			r.Route("/subjects", func(r chi.Router) {
+				r.Get("/", subjectHandler.ListSubjects)
+				r.Get("/{id}", subjectHandler.GetSubject)
+				r.Get("/{id}/materials", subjectHandler.ListMaterials)
+
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireRoles(domain.RoleAdmin, domain.RoleTeacher))
+
+					r.Post("/", subjectHandler.CreateSubject)
+					r.Put("/{id}", subjectHandler.UpdateSubject)
+					r.Delete("/{id}", subjectHandler.DeleteSubject)
+
+					r.Post("/{id}/materials", subjectHandler.CreateMaterial)
+					r.Delete("/{id}/materials/{materialId}", subjectHandler.DeleteMaterial)
+				})
+			})
+
+			// ==========================================
+			// Announcements Module: one shared platform-wide feed rather than one
+			// per subject, so there's a single place to check for updates.
+			// ==========================================
+			r.Route("/announcements", func(r chi.Router) {
+				r.Get("/", announcementHandler.ListAnnouncements)
+
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireRoles(domain.RoleAdmin, domain.RoleTeacher))
+
+					r.Post("/", announcementHandler.CreateAnnouncement)
+					r.Put("/{id}", announcementHandler.UpdateAnnouncement)
+					r.Delete("/{id}", announcementHandler.DeleteAnnouncement)
+				})
 			})
 		})
 	})

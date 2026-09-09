@@ -175,6 +175,8 @@ func TestChatService_UnicodeTitleAndRename(t *testing.T) {
 	_ = reply
 }
 
+// mockRAGIngester lets TestChatService_SavePersonalMemoryFact assert that saving a
+// personal memory fact never ingests it into the RAG knowledge base (see that test).
 type mockRAGIngester struct {
 	platformVertex.RAGEngine
 	ingestedDocs []*domain.KnowledgeDocument
@@ -229,9 +231,13 @@ func TestChatService_SavePersonalMemoryFact(t *testing.T) {
 		t.Errorf("expected 2 extracted facts, got %d", len(mem.ExtractedFacts))
 	}
 
-	// 4. Verify RAG ingestion was called for both facts
-	if len(mockRAG.ingestedDocs) != 2 {
-		t.Errorf("expected 2 documents ingested into RAG, got %d", len(mockRAG.ingestedDocs))
+	// 4. Verify neither fact was ingested into the RAG knowledge base. Personal
+	// memory facts must only ever be persisted to the student's own profile — the
+	// RAG store is curriculum content an admin/teacher deliberately uploads, and an
+	// earlier version of this method also mirrored every fact into it, which meant
+	// per-student facts leaked into the shared knowledge base management screen.
+	if len(mockRAG.ingestedDocs) != 0 {
+		t.Errorf("expected no documents ingested into RAG from personal memory facts, got %d: %v", len(mockRAG.ingestedDocs), mockRAG.ingestedDocs)
 	}
 
 	// 5. Test rejecting duplicate facts and meta-conversational prompts
