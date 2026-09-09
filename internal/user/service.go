@@ -364,13 +364,27 @@ func (s *Service) UpdateStatus(ctx context.Context, id string, status domain.Use
 }
 
 // DeleteUser removes a user account, its profile, and every piece of data associated
-// with it: chat sessions and their messages, personal-intelligence memory, and the
-// Firebase Auth identity itself. Chat data is cascaded first (deleting the user record
-// first and then failing partway through the cascade would leave orphaned chat data
-// with no owner left to retry the cleanup against).
+// with it: the Firebase Auth identity, chat sessions and their messages, and
+// personal-intelligence memory.
+//
+// The Firebase Auth identity is deleted first, and a failure there aborts the whole
+// operation before anything else is touched. An earlier version of this method treated
+// that step as a best-effort side note and discarded its error, which meant a failed
+// Auth deletion could still be reported back as "user deleted successfully" — leaving
+// a Firebase Auth account that silently kept existing (and kept its email address
+// unavailable for re-registration) with no record of anything having gone wrong.
+// Deleting Auth first also means a failure here leaves every other record untouched,
+// so the whole call can simply be retried once whatever's wrong with Auth is fixed,
+// rather than resuming a half-completed cascade. FirebaseAuthClient.DeleteUser treats
+// "already deleted" as success, so retrying after a partial failure (Auth gone, other
+// data not yet cleaned up) is safe.
 func (s *Service) DeleteUser(ctx context.Context, id string) error {
 	if id == "" {
 		return domain.ErrInvalidInput
+	}
+
+	if err := s.authClient.DeleteUser(ctx, id); err != nil {
+		return fmt.Errorf("failed to delete firebase auth user: %w", err)
 	}
 
 	if s.chatRepo != nil {
@@ -384,11 +398,7 @@ func (s *Service) DeleteUser(ctx context.Context, id string) error {
 		}
 	}
 
-	if err := s.repo.DeleteUser(ctx, id); err != nil {
-		return err
-	}
-	_ = s.authClient.DeleteUser(ctx, id)
-	return nil
+	return s.repo.DeleteUser(ctx, id)
 }
 
 // ListStudents returns filtered, paginated student records.

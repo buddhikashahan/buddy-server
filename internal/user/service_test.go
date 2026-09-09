@@ -2,6 +2,7 @@ package user_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -10,6 +11,16 @@ import (
 	platformAuth "buddy/server/internal/platform/auth"
 	"buddy/server/internal/user"
 )
+
+// failingAuthClient wraps DevAuthClient but fails DeleteUser, to test that a Firebase
+// Auth deletion failure aborts user.Service.DeleteUser before any data is touched.
+type failingAuthClient struct {
+	*platformAuth.DevAuthClient
+}
+
+func (f *failingAuthClient) DeleteUser(ctx context.Context, uid string) error {
+	return errors.New("simulated firebase auth outage")
+}
 
 func setupTestService() *user.Service {
 	repo := user.NewMemoryRepository()
@@ -113,6 +124,36 @@ func TestService_UpdateStatus(t *testing.T) {
 
 	if student.Status != domain.StatusSuspended {
 		t.Errorf("expected status suspended, got %s", student.Status)
+	}
+}
+
+func TestService_DeleteUser_AbortsIfAuthDeletionFails(t *testing.T) {
+	repo := user.NewMemoryRepository()
+	authClient := &failingAuthClient{DevAuthClient: &platformAuth.DevAuthClient{}}
+	chatRepo := chatModule.NewMemoryChatRepository()
+	svc := user.NewService(repo, authClient, chatRepo)
+	ctx := context.Background()
+
+	created, err := svc.CreateStudent(ctx, domain.CreateStudentRequest{
+		Email:              "auth.failure@example.com",
+		Password:           "password123",
+		DisplayName:        "Auth Failure",
+		RegistrationNumber: "STU-004",
+		Grade:              "10th Grade",
+	})
+	if err != nil {
+		t.Fatalf("failed to create student: %v", err)
+	}
+
+	if err := svc.DeleteUser(ctx, created.ID); err == nil {
+		t.Fatal("expected DeleteUser to return an error when Firebase Auth deletion fails")
+	}
+
+	// The deletion must abort before touching any data, not report success while the
+	// Firebase Auth identity silently lingers — so the Firestore record must survive
+	// and remain retryable.
+	if _, err := svc.GetStudent(ctx, created.ID); err != nil {
+		t.Errorf("expected student record to survive an aborted deletion, got error: %v", err)
 	}
 }
 

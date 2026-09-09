@@ -119,9 +119,19 @@ func (c *FirebaseAuthClient) UpdateUserStatus(ctx context.Context, uid string, d
 	return err
 }
 
-// DeleteUser removes a user from Firebase Auth.
+// DeleteUser removes a user from Firebase Auth. Deleting a uid that's already gone is
+// treated as success rather than an error: this keeps the operation idempotent, so a
+// caller that retries after a partial failure elsewhere in a larger deletion (e.g.
+// user.Service.DeleteUser's cascade) doesn't get tripped up re-deleting an identity
+// that's already gone.
 func (c *FirebaseAuthClient) DeleteUser(ctx context.Context, uid string) error {
-	return c.client.DeleteUser(ctx, uid)
+	if err := c.client.DeleteUser(ctx, uid); err != nil {
+		if fbauth.IsUserNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("firebase auth: failed to delete user %s: %w", uid, err)
+	}
+	return nil
 }
 
 // DevAuthClient provides a mock provider for offline local testing.
