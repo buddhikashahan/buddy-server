@@ -46,8 +46,16 @@ gcloud run deploy buddy-server \
   --platform managed \
   --allow-unauthenticated \
   --timeout 3600 \
-  --set-env-vars ENV=production,GCP_PROJECT_ID=buddy-2b92f,FIRESTORE_DATABASE_ID=buddy-db,VERTEX_LOCATION=global,GEMINI_MODEL=gemini-3.8-flash,VERTEX_LIVE_MODEL=gemini-live-2.5-flash-native-audio,AUTH_DEV_MODE=false,RATE_LIMIT_RPS=100,RATE_LIMIT_BURST=200,CORS_ALLOWED_ORIGINS=https://buddy-2b92f.web.app
+  --set-env-vars ENV=production,GCP_PROJECT_ID=buddy-2b92f,FIRESTORE_DATABASE_ID=buddy-db,VERTEX_LOCATION=global,GEMINI_MODEL=gemini-3.8-flash,VERTEX_LIVE_MODEL=gemini-live-2.5-flash-native-audio,AUTH_DEV_MODE=false,RATE_LIMIT_RPS=100,RATE_LIMIT_BURST=200,CORS_ALLOWED_ORIGINS=https://buddy-2b92f.web.app\,https://buddy-2b92f.firebaseapp.com\,https://buddy.tjg.lk
 ```
+
+`CORS_ALLOWED_ORIGINS` covers all three domains the Hosting site actually answers on:
+the two Firebase defaults plus the `buddy.tjg.lk` custom domain. The commas inside
+that value need escaping (`\,`) so `gcloud`'s own `--set-env-vars` comma-separated
+list parser doesn't split on them — if you're pasting this into the Cloud Run
+console's environment variable UI instead, use plain unescaped commas there.
+
+Update this list if you ever add or remove a custom domain from the Hosting site.
 
 If you're using the Cloud Run console's "Continuously deploy from a repository"
 option instead (GitHub + Cloud Build) rather than these commands, two settings need
