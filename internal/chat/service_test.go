@@ -21,7 +21,7 @@ func TestChatService_SystemPromptManagement(t *testing.T) {
 	ctx := context.Background()
 
 	// 1. Get default prompt
-	prompt, err := svc.GetActivePrompt(ctx)
+	prompt, err := svc.GetActivePrompt(ctx, domain.PromptKindChat)
 	if err != nil {
 		t.Fatalf("failed to get active prompt: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestChatService_SystemPromptManagement(t *testing.T) {
 	}
 
 	// 2. Update prompt as admin
-	updated, err := svc.UpdateSystemPrompt(ctx, "admin-001", domain.UpdatePromptRequest{
+	updated, err := svc.UpdateSystemPrompt(ctx, "admin-001", domain.PromptKindChat, domain.UpdatePromptRequest{
 		Content:     "Updated Buddy AI persona instructions",
 		Description: "Refined empathetic mentoring directives",
 	})
@@ -43,6 +43,60 @@ func TestChatService_SystemPromptManagement(t *testing.T) {
 	}
 	if updated.Content != "Updated Buddy AI persona instructions" {
 		t.Errorf("expected updated content, got %s", updated.Content)
+	}
+
+	// 3. Re-fetching must return the same updated revision, not an older one — this
+	// guards against the previous bug where saving a new active prompt never
+	// deactivated its predecessor, leaving GetActivePrompt to pick between them
+	// arbitrarily.
+	refetched, err := svc.GetActivePrompt(ctx, domain.PromptKindChat)
+	if err != nil {
+		t.Fatalf("failed to re-fetch active prompt: %v", err)
+	}
+	if refetched.ID != updated.ID {
+		t.Errorf("expected re-fetch to return the just-updated prompt %s, got %s", updated.ID, refetched.ID)
+	}
+}
+
+func TestChatService_ChatAndLiveTalkPromptsAreIndependent(t *testing.T) {
+	svc := setupTestChatService()
+	ctx := context.Background()
+
+	// A fresh live_talk prompt must start from its own default, not the chat prompt's.
+	liveTalkDefault, err := svc.GetActivePrompt(ctx, domain.PromptKindLiveTalk)
+	if err != nil {
+		t.Fatalf("failed to get default live talk prompt: %v", err)
+	}
+	if liveTalkDefault.Content != domain.DefaultLiveTalkSystemPrompt {
+		t.Errorf("expected the seeded Live Talk default, got: %s", liveTalkDefault.Content)
+	}
+
+	// Updating the chat prompt must not affect the live_talk prompt.
+	if _, err := svc.UpdateSystemPrompt(ctx, "admin-001", domain.PromptKindChat, domain.UpdatePromptRequest{
+		Content: "New chat-only persona",
+	}); err != nil {
+		t.Fatalf("failed to update chat prompt: %v", err)
+	}
+	liveTalkAfterChatUpdate, err := svc.GetActivePrompt(ctx, domain.PromptKindLiveTalk)
+	if err != nil {
+		t.Fatalf("failed to get live talk prompt: %v", err)
+	}
+	if liveTalkAfterChatUpdate.Content != domain.DefaultLiveTalkSystemPrompt {
+		t.Errorf("expected live talk prompt to be untouched by a chat prompt update, got: %s", liveTalkAfterChatUpdate.Content)
+	}
+
+	// Updating the live_talk prompt must not affect the chat prompt.
+	if _, err := svc.UpdateSystemPrompt(ctx, "admin-001", domain.PromptKindLiveTalk, domain.UpdatePromptRequest{
+		Content: "New live-talk-only persona",
+	}); err != nil {
+		t.Fatalf("failed to update live talk prompt: %v", err)
+	}
+	chatAfterLiveTalkUpdate, err := svc.GetActivePrompt(ctx, domain.PromptKindChat)
+	if err != nil {
+		t.Fatalf("failed to get chat prompt: %v", err)
+	}
+	if chatAfterLiveTalkUpdate.Content != "New chat-only persona" {
+		t.Errorf("expected chat prompt to be untouched by a live talk prompt update, got: %s", chatAfterLiveTalkUpdate.Content)
 	}
 }
 

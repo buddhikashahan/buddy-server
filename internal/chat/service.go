@@ -150,7 +150,7 @@ func (s *Service) SendMessage(ctx context.Context, studentID, sessionID string, 
 	}()
 	go func() {
 		defer wg.Done()
-		if prompt, promptErr := s.repo.GetActivePrompt(ctx); promptErr == nil && prompt != nil && prompt.Content != "" {
+		if prompt, promptErr := s.repo.GetActivePrompt(ctx, domain.PromptKindChat); promptErr == nil && prompt != nil && prompt.Content != "" {
 			systemPromptText = prompt.Content
 		}
 	}()
@@ -682,28 +682,40 @@ func DeduplicateFacts(facts []string) []string {
 	return result
 }
 
-// GetActivePrompt retrieves the currently active system prompt.
-func (s *Service) GetActivePrompt(ctx context.Context) (*domain.SystemPrompt, error) {
-	return s.repo.GetActivePrompt(ctx)
+// GetActivePrompt retrieves the currently active system prompt of the given kind
+// (chat or Live Talk — see domain.PromptKind).
+func (s *Service) GetActivePrompt(ctx context.Context, kind domain.PromptKind) (*domain.SystemPrompt, error) {
+	return s.repo.GetActivePrompt(ctx, kind)
 }
 
-// UpdateSystemPrompt creates and activates a new revision of the system prompt (Admin only).
-func (s *Service) UpdateSystemPrompt(ctx context.Context, adminID string, req domain.UpdatePromptRequest) (*domain.SystemPrompt, error) {
+// UpdateSystemPrompt creates and activates a new revision of the system prompt of the
+// given kind (Admin only). Chat and Live Talk are edited completely independently —
+// updating one never touches the other's active prompt or version history.
+func (s *Service) UpdateSystemPrompt(ctx context.Context, adminID string, kind domain.PromptKind, req domain.UpdatePromptRequest) (*domain.SystemPrompt, error) {
 	v := validator.New()
 	v.Required("content", req.Content)
+	if !kind.IsValid() {
+		v.AddError("kind", "must be 'chat' or 'live_talk'")
+	}
 	if v.HasErrors() {
 		return nil, v.Error()
 	}
 
-	current, _ := s.repo.GetActivePrompt(ctx)
+	current, _ := s.repo.GetActivePrompt(ctx, kind)
 	newVersion := 1
 	if current != nil {
 		newVersion = current.Version + 1
 	}
 
+	name := "Buddy AI Chat Persona"
+	if kind == domain.PromptKindLiveTalk {
+		name = "Buddy AI Live Talk Persona"
+	}
+
 	prompt := &domain.SystemPrompt{
-		ID:          fmt.Sprintf("prompt-v%d-%d", newVersion, time.Now().Unix()),
-		Name:        fmt.Sprintf("Buddy AI Persona v%d", newVersion),
+		ID:          fmt.Sprintf("prompt-%s-v%d-%d", kind, newVersion, time.Now().Unix()),
+		Kind:        kind,
+		Name:        fmt.Sprintf("%s v%d", name, newVersion),
 		Content:     strings.TrimSpace(req.Content),
 		Version:     newVersion,
 		IsActive:    true,

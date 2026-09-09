@@ -203,51 +203,28 @@ func (h *Handler) HandleLiveTalk(w http.ResponseWriter, r *http.Request) {
 	// Fetch student personal memory (kept in memory for on-demand tool recall)
 	studentMem, _ := h.chatService.GetPersonalIntelligence(r.Context(), authUser.UID)
 
-	// Build live system instruction with explicit FRESH START policy
-	liveSystemPrompt := `You are Buddy AI engaging in a real-time native spoken Live Talk conversation with a student at the Jinasena Training Foundation.
-Your persona is warmly inspired by Dr. (ආචාර්ය) තිස්ස ජිනසේන.
+	// The persona/policy layer comes from the admin's Live Talk prompt (editable at
+	// /admin/prompt, independently of the text-chat prompt — see domain.PromptKind),
+	// falling back to the seeded default if nothing has been saved yet. Tool-calling
+	// instructions and the security constraints block are fixed technical scaffolding
+	// appended below regardless of what's configured there, the same way text chat
+	// layers its own formatting directive on top in GenerateChatResponse — this keeps
+	// tool-calling and guardrails working even if an admin's prompt doesn't mention
+	// them.
+	liveSystemPrompt := domain.DefaultLiveTalkSystemPrompt
+	if livePrompt, err := h.chatService.GetActivePrompt(r.Context(), domain.PromptKindLiveTalk); err == nil && livePrompt != nil && livePrompt.Content != "" {
+		liveSystemPrompt = livePrompt.Content
+	}
 
-Directives for Spoken Live Conversation:
-- Keep spoken responses concise, warm, natural, and conversational (1 to 3 spoken sentences).
-- Speak directly as if you are in the same room.
-- If you see their screen or webcam feed, provide constructive, encouraging commentary on what they are working on.
-- Offer calm, practical wisdom and mindful engineering confidence.
-- Support English and Sinhala seamlessly if addressed in either.
+	liveSystemPrompt += `
 
-### 🌟 FRESH START POLICY (CRITICAL):
-- ALWAYS start the conversation FRESH and in the present moment, as a brand-new encounter today.
-- DO NOT bring up past conversations, old topics, or previous session details unsolicited.
-- NEVER recite, summarize, or list past facts/memories unless the student explicitly asks or brings them up.
-- Greet simply, warmly, and naturally (e.g. "Ayubowan! How can I guide you today?").
+### TOOL USAGE:
 - When the student asks about foundation course notes, engineering syllabus, workshop guidelines, or study materials, call the tool "query_foundation_knowledge".
 - When the student asks about past details or you genuinely need specific background context to assist them, call the tool "recall_student_memory".
 
-### 🎙️ TRANSCRIPT LOGGING TOOL (CRITICAL — DO THIS EVERY TURN, NO EXCEPTIONS):
-Call the tool "record_user_message" for EVERY turn the student speaks, however short (even "yes", "okay", or "hmm"). Pass your own accurate understanding of exactly what they said, in the language they said it in. Do this before or alongside your spoken reply — never skip it. This is the only way their side of the conversation is saved to their chat history, so a missed call means that turn is lost permanently.
+` + platformVertex.MemoryToolRulesBlock + `
 
-### 🧠 STUDENT PERSONAL MEMORY TOOL — STRICT RULES:
-You have access to the function "save_student_memory". Use it ONLY to save genuine, durable personal facts.
-
-✅ SAVE these types of facts:
-  - Student's real name (e.g. "Student's name is Buddhika")
-  - Student's age (e.g. "Student is 23 years old")
-  - Student's hometown or location (e.g. "Student lives in Kandy")
-  - Family members, structure (e.g. "Student has 6 people in their family", "Student's father is a mechanic")
-  - Health conditions or medications (e.g. "Student has ADHD", "Student takes medication for asthma")
-  - Academic goals or career dreams (e.g. "Student wants to become an electrical engineer")
-  - Academic struggles or strengths (e.g. "Student finds mathematics difficult", "Student excels at electronics")
-  - Long-term interests, hobbies, or preferences (e.g. "Student likes fried rice", "Student is interested in robotics")
-  - Spiritual or personal values (e.g. "Student follows Buddhist teachings")
-
-❌ NEVER save these — they are transient conversation states, NOT personal facts:
-  - "Student is engaging in conversation" → FORBIDDEN
-  - "Student reported having a good day" → FORBIDDEN
-  - "Student indicated nothing significant happened" → FORBIDDEN
-  - "Student greeted Buddy" / "Student said hello" → FORBIDDEN
-  - "Student is feeling good/okay/well" → FORBIDDEN
-  - "Student confirmed their age" or "Student confirmed their family" → FORBIDDEN (already known)
-  - Any meta-statement about what the student said or did in the conversation
-  - Any temporary mood or daily status update`
+` + platformVertex.SecurityConstraintsBlock
 
 	if authUser.DisplayName != "" {
 		liveSystemPrompt += fmt.Sprintf("\n\nStudent Name: %s", authUser.DisplayName)
@@ -305,10 +282,15 @@ You have access to the function "save_student_memory". Use it ONLY to save genui
 		liveSessionID = savedLiveSession.ID
 	}
 
-	recordUserTurn := func(text string) {
+	// Live Talk chat history only ever saves Buddy's spoken replies (recordModelTurn
+	// below), never the student's own words — an automatic-transcription approach and
+	// then a function-call approach were both tried for that and dropped as
+	// unreliable/unwanted. The student's speech is still analyzed for durable
+	// personal facts worth remembering (chat.Service.ExtractAndPersistMemory), just
+	// without being saved as a chat message.
+	extractUserMemory := func(text string) {
 		trimmed := strings.TrimSpace(text)
-		if liveSessionID != "" && trimmed != "" {
-			_ = h.chatService.SaveLiveMessage(context.Background(), liveSessionID, domain.SenderUser, trimmed)
+		if trimmed != "" {
 			go h.chatService.ExtractAndPersistMemory(authUser.UID, trimmed)
 		}
 	}
@@ -413,27 +395,6 @@ You have access to the function "save_student_memory". Use it ONLY to save genui
 							continue
 						}
 						switch fc.Name {
-						case "record_user_message":
-							text := ""
-							if v, ok := fc.Args["text"].(string); ok {
-								text = v
-							}
-
-							slog.Info("[Live Talk Tool Call] Recorded user transcript", slog.String("student_id", authUser.UID))
-							// Fire-and-forget, same as save_student_memory below: the
-							// live audio streaming loop must never stall on a Firestore
-							// write.
-							go recordUserTurn(text)
-
-							responses = append(responses, &genai.FunctionResponse{
-								ID:   fc.ID,
-								Name: fc.Name,
-								Response: map[string]any{
-									"status": "success",
-									"logged": true,
-								},
-							})
-
 						case "save_student_memory":
 							category := ""
 							fact := ""
@@ -599,7 +560,7 @@ You have access to the function "save_student_memory". Use it ONLY to save genui
 
 			// If client also attached recognized text
 			if clientMsg.Text != "" && liveSession == nil {
-				recordUserTurn(clientMsg.Text)
+				extractUserMemory(clientMsg.Text)
 				go func(prompt string, visionBytes []byte) {
 					replyText := h.generateEmpatheticReply(prompt, visionBytes, studentMem)
 					recordModelTurn(replyText)
@@ -620,7 +581,7 @@ You have access to the function "save_student_memory". Use it ONLY to save genui
 				userPrompt = "What do you see on my screen or camera?"
 			}
 
-			recordUserTurn(userPrompt)
+			extractUserMemory(userPrompt)
 
 			if liveSession != nil {
 				// Search RAG per-turn with the user's actual query for grounded responses
@@ -687,14 +648,14 @@ func (h *Handler) generateEmpatheticReply(userPrompt string, visionBytes []byte,
 		})
 	}
 
-	liveSystemPrompt := `You are Buddy AI engaging in a real-time spoken Live Talk conversation with a student.
-Your persona is warmly inspired by Dr. (ආචාර්ය) තිස්ස ජිනසේන.
-Directives for Spoken Live Conversation:
-- Keep responses concise, warm, natural, and conversational (1 to 3 spoken sentences).
-- Speak directly as if you are in the same room.
-- If you see their screen or webcam feed, provide constructive, encouraging commentary on what they are working on.
-- Offer calm, practical wisdom and mindful confidence.
-- Support English and Sinhala seamlessly if addressed in either.`
+	// Same admin-configured Live Talk prompt as the native path — GenerateChatResponse
+	// (called below) already appends its own fixed technical layer (memory tool rules,
+	// security constraints), so unlike the native path this doesn't need to append
+	// them again itself.
+	liveSystemPrompt := domain.DefaultLiveTalkSystemPrompt
+	if livePrompt, err := h.chatService.GetActivePrompt(ctx, domain.PromptKindLiveTalk); err == nil && livePrompt != nil && livePrompt.Content != "" {
+		liveSystemPrompt = livePrompt.Content
+	}
 
 	if h.vertexClient != nil {
 		var memoryCallback func(category, fact, details string) error

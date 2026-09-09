@@ -331,9 +331,22 @@ func (h *Handler) DeleteStudentMemoryFact(w http.ResponseWriter, r *http.Request
 	response.JSON(w, http.StatusOK, mem)
 }
 
-// GetActivePrompt retrieves the current active system prompt (Admin only).
+// promptKindFromURL reads and validates the {kind} URL param ("chat" or "live_talk").
+func promptKindFromURL(r *http.Request) (domain.PromptKind, bool) {
+	kind := domain.PromptKind(chi.URLParam(r, "kind"))
+	return kind, kind.IsValid()
+}
+
+// GetActivePrompt retrieves the current active system prompt of the given kind
+// (Admin only). GET /api/v1/chat/prompt/{kind}
 func (h *Handler) GetActivePrompt(w http.ResponseWriter, r *http.Request) {
-	prompt, err := h.service.GetActivePrompt(r.Context())
+	kind, ok := promptKindFromURL(r)
+	if !ok {
+		response.Error(w, http.StatusBadRequest, "INVALID_KIND", "kind must be 'chat' or 'live_talk'", nil)
+		return
+	}
+
+	prompt, err := h.service.GetActivePrompt(r.Context(), kind)
 	if err != nil {
 		response.HandleError(w, err)
 		return
@@ -342,11 +355,18 @@ func (h *Handler) GetActivePrompt(w http.ResponseWriter, r *http.Request) {
 	response.JSON(w, http.StatusOK, prompt)
 }
 
-// UpdateSystemPrompt creates and activates a new revision of the system prompt (Admin only).
+// UpdateSystemPrompt creates and activates a new revision of the system prompt of the
+// given kind (Admin only). PUT /api/v1/chat/prompt/{kind}
 func (h *Handler) UpdateSystemPrompt(w http.ResponseWriter, r *http.Request) {
 	authUser, ok := domain.AuthUserFromContext(r.Context())
 	if !ok || authUser == nil {
 		response.HandleError(w, domain.ErrUnauthorized)
+		return
+	}
+
+	kind, ok := promptKindFromURL(r)
+	if !ok {
+		response.Error(w, http.StatusBadRequest, "INVALID_KIND", "kind must be 'chat' or 'live_talk'", nil)
 		return
 	}
 
@@ -356,7 +376,7 @@ func (h *Handler) UpdateSystemPrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prompt, err := h.service.UpdateSystemPrompt(r.Context(), authUser.UID, req)
+	prompt, err := h.service.UpdateSystemPrompt(r.Context(), authUser.UID, kind, req)
 	if err != nil {
 		response.HandleError(w, err)
 		return

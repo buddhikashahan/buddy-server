@@ -190,41 +190,44 @@ func (r *FirestoreChatRepository) DeletePersonalIntelligence(ctx context.Context
 	return err
 }
 
-func (r *FirestoreChatRepository) GetActivePrompt(ctx context.Context) (*domain.SystemPrompt, error) {
-	iter := r.client.Collection(CollectionSystemPrompts).
-		Where("is_active", "==", true).
-		Limit(1).
-		Documents(ctx)
-
-	doc, err := iter.Next()
-	if err == iterator.Done || err != nil {
-		// Return default seeded prompt
+// defaultPromptFor returns the seeded default document for a prompt kind, used until
+// an admin saves their own.
+func defaultPromptFor(kind domain.PromptKind) *domain.SystemPrompt {
+	if kind == domain.PromptKindLiveTalk {
 		return &domain.SystemPrompt{
-			ID:        "default-buddy-prompt",
-			Name:      "Buddy AI Default Prompt (Jinasena Training Foundation)",
-			Content:   domain.DefaultBuddySystemPrompt,
+			ID:        "default-buddy-live-talk-prompt",
+			Kind:      domain.PromptKindLiveTalk,
+			Name:      "Buddy AI Live Talk Default Prompt (Jinasena Training Foundation)",
+			Content:   domain.DefaultLiveTalkSystemPrompt,
 			Version:   1,
 			IsActive:  true,
 			UpdatedAt: time.Now(),
-		}, nil
+		}
 	}
-
-	var p domain.SystemPrompt
-	if err := doc.DataTo(&p); err != nil {
-		return nil, err
+	return &domain.SystemPrompt{
+		ID:        "default-buddy-prompt",
+		Kind:      domain.PromptKindChat,
+		Name:      "Buddy AI Default Prompt (Jinasena Training Foundation)",
+		Content:   domain.DefaultBuddySystemPrompt,
+		Version:   1,
+		IsActive:  true,
+		UpdatedAt: time.Now(),
 	}
-	return &p, nil
 }
 
-func (r *FirestoreChatRepository) SavePrompt(ctx context.Context, prompt *domain.SystemPrompt) error {
-	prompt.UpdatedAt = time.Now()
-	_, err := r.client.Collection(CollectionSystemPrompts).Doc(prompt.ID).Set(ctx, prompt)
-	return err
-}
-
-func (r *FirestoreChatRepository) ListPrompts(ctx context.Context) ([]*domain.SystemPrompt, error) {
-	iter := r.client.Collection(CollectionSystemPrompts).Documents(ctx)
-	var prompts []*domain.SystemPrompt
+// GetActivePrompt returns the active prompt for kind. It queries every is_active
+// document rather than filtering by kind in Firestore, because every prompt document
+// that existed before PromptKind was introduced has no "kind" field at all — those are
+// implicitly PromptKindChat documents, and a Firestore equality filter on a missing
+// field would silently fail to match them, which would make an admin's existing
+// carefully-configured chat prompt vanish back to the hardcoded default the moment
+// this shipped. If more than one matching active document turns up (e.g. left over
+// from before an earlier version of this method failed to deactivate a prompt's
+// predecessor when a new one was saved), the most recent one wins and the others are
+// deactivated in the background — self-healing rather than returning an arbitrary one.
+func (r *FirestoreChatRepository) GetActivePrompt(ctx context.Context, kind domain.PromptKind) (*domain.SystemPrompt, error) {
+	iter := r.client.Collection(CollectionSystemPrompts).Where("is_active", "==", true).Documents(ctx)
+	var candidates []*domain.SystemPrompt
 	for {
 		doc, err := iter.Next()
 		if err == iterator.Done {
@@ -234,11 +237,81 @@ func (r *FirestoreChatRepository) ListPrompts(ctx context.Context) ([]*domain.Sy
 			return nil, err
 		}
 		var p domain.SystemPrompt
-		if err := doc.DataTo(&p); err == nil {
-			prompts = append(prompts, &p)
+		if err := doc.DataTo(&p); err != nil {
+			continue
+		}
+		effectiveKind := p.Kind
+		if effectiveKind == "" {
+			effectiveKind = domain.PromptKindChat // pre-PromptKind documents
+		}
+		if effectiveKind == kind {
+			candidates = append(candidates, &p)
 		}
 	}
-	return prompts, nil
+
+	if len(candidates) == 0 {
+		return defaultPromptFor(kind), nil
+	}
+
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].UpdatedAt.After(candidates[j].UpdatedAt) })
+	winner := candidates[0]
+	if winner.Kind == "" {
+		winner.Kind = kind
+	}
+
+	if len(candidates) > 1 {
+		go func(losers []*domain.SystemPrompt) {
+			bgCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			for _, loser := range losers {
+				_, _ = r.client.Collection(CollectionSystemPrompts).Doc(loser.ID).Update(bgCtx, []firestore.Update{
+					{Path: "is_active", Value: false},
+				})
+			}
+		}(candidates[1:])
+	}
+
+	return winner, nil
+}
+
+func (r *FirestoreChatRepository) SavePrompt(ctx context.Context, prompt *domain.SystemPrompt) error {
+	prompt.UpdatedAt = time.Now()
+	if _, err := r.client.Collection(CollectionSystemPrompts).Doc(prompt.ID).Set(ctx, prompt); err != nil {
+		return err
+	}
+
+	if !prompt.IsActive {
+		return nil
+	}
+
+	// Deactivate every other active document of this kind (including legacy documents
+	// with no kind field, for PromptKindChat) so GetActivePrompt never has more than
+	// one genuine candidate to pick between going forward.
+	iter := r.client.Collection(CollectionSystemPrompts).Where("is_active", "==", true).Documents(ctx)
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			break
+		}
+		if doc.Ref.ID == prompt.ID {
+			continue
+		}
+		var p domain.SystemPrompt
+		if err := doc.DataTo(&p); err != nil {
+			continue
+		}
+		effectiveKind := p.Kind
+		if effectiveKind == "" {
+			effectiveKind = domain.PromptKindChat
+		}
+		if effectiveKind == prompt.Kind {
+			_, _ = doc.Ref.Update(ctx, []firestore.Update{{Path: "is_active", Value: false}})
+		}
+	}
+	return nil
 }
 
 // Helper document type
@@ -246,26 +319,23 @@ type ChatSessionDocument = domain.ChatSession
 
 // MemoryChatRepository provides thread-safe in-memory storage for unit testing and offline development.
 type MemoryChatRepository struct {
-	mu           sync.RWMutex
-	sessions     map[string]*domain.ChatSession
-	messages     map[string][]*domain.ChatMessage
-	memories     map[string]*domain.StudentPersonalIntelligence
-	activePrompt *domain.SystemPrompt
+	mu            sync.RWMutex
+	sessions      map[string]*domain.ChatSession
+	messages      map[string][]*domain.ChatMessage
+	memories      map[string]*domain.StudentPersonalIntelligence
+	activePrompts map[domain.PromptKind]*domain.SystemPrompt
 }
 
-// NewMemoryChatRepository initializes an in-memory repository seeded with default Buddy system prompt.
+// NewMemoryChatRepository initializes an in-memory repository seeded with the default
+// chat and Live Talk system prompts.
 func NewMemoryChatRepository() domain.ChatRepository {
 	return &MemoryChatRepository{
 		sessions: make(map[string]*domain.ChatSession),
 		messages: make(map[string][]*domain.ChatMessage),
 		memories: make(map[string]*domain.StudentPersonalIntelligence),
-		activePrompt: &domain.SystemPrompt{
-			ID:        "default-buddy-prompt",
-			Name:      "Buddy AI Default Prompt (Jinasena Training Foundation)",
-			Content:   domain.DefaultBuddySystemPrompt,
-			Version:   1,
-			IsActive:  true,
-			UpdatedAt: time.Now(),
+		activePrompts: map[domain.PromptKind]*domain.SystemPrompt{
+			domain.PromptKindChat:     defaultPromptFor(domain.PromptKindChat),
+			domain.PromptKindLiveTalk: defaultPromptFor(domain.PromptKindLiveTalk),
 		},
 	}
 }
@@ -382,21 +452,20 @@ func (m *MemoryChatRepository) DeletePersonalIntelligence(ctx context.Context, s
 	return nil
 }
 
-func (m *MemoryChatRepository) GetActivePrompt(ctx context.Context) (*domain.SystemPrompt, error) {
+func (m *MemoryChatRepository) GetActivePrompt(ctx context.Context, kind domain.PromptKind) (*domain.SystemPrompt, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.activePrompt, nil
+	if p, ok := m.activePrompts[kind]; ok {
+		return p, nil
+	}
+	return defaultPromptFor(kind), nil
 }
 
 func (m *MemoryChatRepository) SavePrompt(ctx context.Context, prompt *domain.SystemPrompt) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.activePrompt = prompt
+	if prompt.IsActive {
+		m.activePrompts[prompt.Kind] = prompt
+	}
 	return nil
-}
-
-func (m *MemoryChatRepository) ListPrompts(ctx context.Context) ([]*domain.SystemPrompt, error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return []*domain.SystemPrompt{m.activePrompt}, nil
 }

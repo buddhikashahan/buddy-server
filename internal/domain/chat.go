@@ -101,8 +101,8 @@ type ChatRepository interface {
 	SavePersonalIntelligence(ctx context.Context, memory *StudentPersonalIntelligence) error
 	DeletePersonalIntelligence(ctx context.Context, studentID string) error
 
-	// System Prompts
-	GetActivePrompt(ctx context.Context) (*SystemPrompt, error)
+	// System Prompts — chat and Live Talk each have their own independently active
+	// prompt (see PromptKind), never sharing a document.
+	GetActivePrompt(ctx context.Context, kind PromptKind) (*SystemPrompt, error)
 	SavePrompt(ctx context.Context, prompt *SystemPrompt) error
-	ListPrompts(ctx context.Context) ([]*SystemPrompt, error)
 }

@@ -250,9 +250,10 @@ func main() {
 			// AI Chat & Mentorship Module (Buddy AI)
 			// ==========================================
 			r.Route("/chat", func(r chi.Router) {
-				// System Prompt Management (Admin Only)
-				r.With(middleware.RequireRoles(domain.RoleAdmin)).Get("/prompt", cHandler.GetActivePrompt)
-				r.With(middleware.RequireRoles(domain.RoleAdmin)).Put("/prompt", cHandler.UpdateSystemPrompt)
+				// System Prompt Management (Admin Only) — {kind} is "chat" or
+				// "live_talk"; each has its own independently active prompt.
+				r.With(middleware.RequireRoles(domain.RoleAdmin)).Get("/prompt/{kind}", cHandler.GetActivePrompt)
+				r.With(middleware.RequireRoles(domain.RoleAdmin)).Put("/prompt/{kind}", cHandler.UpdateSystemPrompt)
 
 				// Student Personal Intelligence (Self)
 				r.Get("/memory", cHandler.GetPersonalIntelligence)
