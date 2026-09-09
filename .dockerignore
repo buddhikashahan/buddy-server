@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+firebase.json
+*.json.key
+service-account*.json
+*.exe
+*.log
+.git

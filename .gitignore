@@ -1,0 +1,25 @@
+# Environment & Secrets (NEVER COMMIT)
+.env
+.env.*
+!.env.example
+firebase.json
+*.pem
+*.key
+
+# Binaries & Build Artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/server
+/dist
+/bin
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+

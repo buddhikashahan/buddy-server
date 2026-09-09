@@ -1,0 +1,603 @@
+{
+	"info": {
+		"_postman_id": "a91b41e3-buddy-lms-postman-v1",
+		"name": "Buddy AI LMS API",
+		"description": "Postman collection for Buddy AI LMS backend with Firebase Authentication, RBAC, and AI Chat.",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:8080",
+			"type": "string"
+		},
+		{
+			"key": "firebaseApiKey",
+			"value": "YOUR_FIREBASE_WEB_API_KEY",
+			"type": "string"
+		},
+		{
+			"key": "token",
+			"value": "dev-admin-token",
+			"type": "string"
+		}
+	],
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{token}}",
+				"type": "string"
+			}
+		]
+	},
+	"item": [
+		{
+			"name": "0. Authentication (Get Real Token)",
+			"item": [
+				{
+					"name": "Firebase Sign In with Password",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"if (jsonData.idToken) {",
+									"    pm.collectionVariables.set(\"token\", jsonData.idToken);",
+									"    console.log(\"Saved real Firebase ID Token to {{token}}\");",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"admin@buddyai.com\",\n    \"password\": \"AdminPassword123!\",\n    \"returnSecureToken\": true\n}"
+						},
+						"url": {
+							"raw": "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={{firebaseApiKey}}",
+							"protocol": "https",
+							"host": [
+								"identitytoolkit",
+								"googleapis",
+								"com"
+							],
+							"path": [
+								"v1",
+								"accounts:signInWithPassword"
+							],
+							"query": [
+								{
+									"key": "key",
+									"value": "{{firebaseApiKey}}"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Verify Token (Backend)",
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"token\": \"{{token}}\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/auth/verify",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "auth", "verify"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "1. Health Check",
+			"request": {
+				"auth": {
+					"type": "noauth"
+				},
+				"method": "GET",
+				"url": {
+					"raw": "{{baseUrl}}/healthz",
+					"host": ["{{baseUrl}}"],
+					"path": ["healthz"]
+				}
+			}
+		},
+		{
+			"name": "2. Current Identity",
+			"item": [
+				{
+					"name": "Get /auth/me (Claims & Role)",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/auth/me",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "auth", "me"]
+						}
+					}
+				},
+				{
+					"name": "Get /users/me (Full Profile)",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/me",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "users", "me"]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "3. Students",
+			"item": [
+				{
+					"name": "Create Student",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"student.alice@example.com\",\n    \"password\": \"SecurePass123!\",\n    \"display_name\": \"Alice Student\",\n    \"registration_number\": \"STU-2026-001\",\n    \"grade\": \"10th Grade\",\n    \"section\": \"A\",\n    \"guardian\": {\n        \"name\": \"John Student\",\n        \"relationship\": \"Father\",\n        \"phone\": \"+1234567890\"\n    }\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/students",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "users", "students"]
+						}
+					}
+				},
+				{
+					"name": "List Students",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/students?limit=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "users", "students"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Get Student by ID",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/students/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "users", "students", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "STUDENT_UID_HERE"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Update Student",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"grade\": \"11th Grade\",\n    \"section\": \"B\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/students/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "users", "students", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "STUDENT_UID_HERE"
+								}
+							]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "4. Staff",
+			"item": [
+				{
+					"name": "Create Staff (Teacher or Admin)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"prof.alan@example.com\",\n    \"password\": \"SecurePass123!\",\n    \"display_name\": \"Prof. Alan Turing\",\n    \"role\": \"teacher\",\n    \"employee_id\": \"EMP-CS-001\",\n    \"designation\": \"Professor of Computing\",\n    \"department\": \"Computer Science\",\n    \"subjects\": [\"Algorithms\", \"AI\", \"Automata\"],\n    \"permissions\": [\"courses.edit\"]\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/staff",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "users", "staff"]
+						}
+					}
+				},
+				{
+					"name": "List Staff",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/staff?limit=10",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "users", "staff"],
+							"query": [
+								{
+									"key": "limit",
+									"value": "10"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Get Staff by ID",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/staff/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "users", "staff", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "STAFF_UID_HERE"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Update Staff",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"designation\": \"Dean of Computing\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/staff/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "users", "staff", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "STAFF_UID_HERE"
+								}
+							]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "5. Lifecycle",
+			"item": [
+				{
+					"name": "Update User Status (Suspend/Activate)",
+					"request": {
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"status\": \"suspended\",\n    \"reason\": \"Policy violation\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/users/:id/status",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "users", ":id", "status"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "USER_UID_HERE"
+								}
+							]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "6. AI Chat & Buddy Persona",
+			"item": [
+				{
+					"name": "Get Active System Prompt (Admin)",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/chat/prompt",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "chat", "prompt"]
+						}
+					}
+				},
+				{
+					"name": "Update System Prompt (Admin)",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"content\": \"You are Buddy, an empathetic, smart, and compassionate AI companion created by the Jinasena Training Foundation, inspired by the visionary instructions of Dr. Tissa Jinasena. You act as a Tutor, Mentor, spiritual guider and Reliable Friend.\",\n    \"description\": \"Updated via Admin Dashboard\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/chat/prompt",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "chat", "prompt"]
+						}
+					}
+				},
+				{
+					"name": "Get Personal Intelligence (Memory)",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/chat/memory",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "chat", "memory"]
+						}
+					}
+				},
+				{
+					"name": "Update Personal Intelligence (Memory)",
+					"request": {
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"background\": \"From Kandy, interested in robotics, engineering, and electronics\",\n    \"family_context\": \"Lives with parents and younger sister; family supports his vocational training\",\n    \"ambitions\": \"Aspires to become an Automation Engineer and launch an ethical hardware startup\",\n    \"strengths\": [\"Analytical thinking\", \"Hands-on mechanics\", \"Resilience\"],\n    \"weaknesses\": [\"Exam stress under strict deadlines\"],\n    \"medical_notes\": \"Mild seasonal allergies; needs regular hydration reminders\",\n    \"spiritual_beliefs\": \"Values Buddhist mindfulness, Metta (loving-kindness), and self-discipline\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/chat/memory",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "chat", "memory"]
+						}
+					}
+				},
+				{
+					"name": "Create Chat Session",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"Guidance on Vocational Discipline & Studies\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/chat/sessions",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "chat", "sessions"]
+						}
+					}
+				},
+				{
+					"name": "List Chat Sessions",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/chat/sessions",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "chat", "sessions"]
+						}
+					}
+				},
+				{
+					"name": "Get Session Messages (History)",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/chat/sessions/:id/messages",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "chat", "sessions", ":id", "messages"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "SESSION_ID_HERE"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Send Message to Buddy (Markdown Output)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"content\": \"Hi Buddy, I am feeling a bit stressed about my upcoming engineering exam. Can you give me some guidance based on Dr. Tissa Jinasena's principles on staying focused and calm?\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/chat/sessions/:id/messages",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "chat", "sessions", ":id", "messages"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "SESSION_ID_HERE"
+								}
+							]
+						}
+					}
+				}
+			]
+		},
+		{
+			"name": "7. RAG Knowledge Base & Notes",
+			"item": [
+				{
+					"name": "Ingest Document / Notes (Teacher & Admin)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"Applied Mechanical Engineering - Workshop Safety & Lathe Operation\",\n    \"subject\": \"Mechanical Engineering\",\n    \"tags\": [\"engineering\", \"lathe\", \"safety\", \"workshop\"],\n    \"author_name\": \"Eng. Sunil Perera\",\n    \"content\": \"Operating a manual lathe machine requires rigorous adherence to personal protective equipment (PPE). Safety goggles and steel-toe boots are mandatory. Before powering the spindle, verify that the chuck key is removed and the workpiece is centered securely in the three-jaw chuck. Never wear loose clothing or jewelry near rotating machinery. Always select the appropriate cutting speed (RPM) based on the workpiece material: softer materials like aluminum allow higher cutting speeds, whereas hardened high-carbon steels require slower speeds and continuous cutting fluid application to prevent thermal warping.\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/rag/documents",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "rag", "documents"]
+						}
+					}
+				},
+				{
+					"name": "List Knowledge Documents",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/rag/documents",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "rag", "documents"]
+						}
+					}
+				},
+				{
+					"name": "Get Document by ID",
+					"request": {
+						"method": "GET",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/rag/documents/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "rag", "documents"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "DOCUMENT_ID_HERE"
+								}
+							]
+						}
+					}
+				},
+				{
+					"name": "Semantic Vector Search (Test RAG Query)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"query\": \"What safety gear should I wear when operating a lathe machine?\",\n    \"top_k\": 3\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/rag/search",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "rag", "search"]
+						}
+					}
+				},
+				{
+					"name": "Delete Knowledge Document",
+					"request": {
+						"method": "DELETE",
+						"url": {
+							"raw": "{{baseUrl}}/api/v1/rag/documents/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["api", "v1", "rag", "documents"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "DOCUMENT_ID_HERE"
+								}
+							]
+						}
+					}
+				}
+			]
+		}
+	]
+}
