@@ -73,6 +73,28 @@ func (r *FirestoreChatRepository) ListSessions(ctx context.Context, studentID st
 	return sessions, nil
 }
 
+func (r *FirestoreChatRepository) ListAllSessionsForStudent(ctx context.Context, studentID string) ([]*domain.ChatSession, error) {
+	iter := r.client.Collection(CollectionChatSessions).
+		Where("student_id", "==", studentID).
+		Documents(ctx)
+
+	var sessions []*domain.ChatSession
+	for {
+		doc, err := iter.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		var s domain.ChatSession
+		if err := doc.DataTo(&s); err == nil {
+			sessions = append(sessions, &s)
+		}
+	}
+	return sessions, nil
+}
+
 func (r *FirestoreChatRepository) UpdateSession(ctx context.Context, session *domain.ChatSession) error {
 	session.UpdatedAt = time.Now()
 	_, err := r.client.Collection(CollectionChatSessions).Doc(session.ID).Set(ctx, session)
@@ -127,6 +149,18 @@ func (r *FirestoreChatRepository) DeleteSessionsByStudent(ctx context.Context, s
 func (r *FirestoreChatRepository) SaveMessage(ctx context.Context, message *domain.ChatMessage) error {
 	_, err := r.client.Collection(CollectionChatMessages).Doc(message.ID).Set(ctx, message)
 	return err
+}
+
+func (r *FirestoreChatRepository) GetMessage(ctx context.Context, messageID string) (*domain.ChatMessage, error) {
+	doc, err := r.client.Collection(CollectionChatMessages).Doc(messageID).Get(ctx)
+	if err != nil {
+		return nil, domain.ErrNotFound
+	}
+	var m domain.ChatMessage
+	if err := doc.DataTo(&m); err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 func (r *FirestoreChatRepository) DeleteMessage(ctx context.Context, messageID string) error {
@@ -370,6 +404,18 @@ func (m *MemoryChatRepository) ListSessions(ctx context.Context, studentID strin
 	return results, nil
 }
 
+func (m *MemoryChatRepository) ListAllSessionsForStudent(ctx context.Context, studentID string) ([]*domain.ChatSession, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var results []*domain.ChatSession
+	for _, s := range m.sessions {
+		if s.StudentID == studentID {
+			results = append(results, s)
+		}
+	}
+	return results, nil
+}
+
 func (m *MemoryChatRepository) UpdateSession(ctx context.Context, session *domain.ChatSession) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -400,8 +446,29 @@ func (m *MemoryChatRepository) DeleteSessionsByStudent(ctx context.Context, stud
 func (m *MemoryChatRepository) SaveMessage(ctx context.Context, message *domain.ChatMessage) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.messages[message.SessionID] = append(m.messages[message.SessionID], message)
+	msgs := m.messages[message.SessionID]
+	for i, existing := range msgs {
+		if existing.ID == message.ID {
+			msgs[i] = message // upsert in place, matching FirestoreChatRepository's Set semantics
+			return nil
+		}
+	}
+	m.messages[message.SessionID] = append(msgs, message)
 	return nil
+}
+
+func (m *MemoryChatRepository) GetMessage(ctx context.Context, messageID string) (*domain.ChatMessage, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, msgs := range m.messages {
+		for _, msg := range msgs {
+			if msg.ID == messageID {
+				copy := *msg
+				return &copy, nil
+			}
+		}
+	}
+	return nil, domain.ErrNotFound
 }
 
 func (m *MemoryChatRepository) DeleteMessage(ctx context.Context, messageID string) error {

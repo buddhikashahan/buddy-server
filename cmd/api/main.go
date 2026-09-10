@@ -16,6 +16,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	analyticsModule "buddy/server/internal/analytics"
 	announcementModule "buddy/server/internal/announcement"
 	authHandler "buddy/server/internal/auth"
 	batchModule "buddy/server/internal/batch"
@@ -142,6 +143,7 @@ func main() {
 	chatService := chatHandler.NewService(chatRepo, vertexClient, ragService)
 	subjectService := subjectModule.NewService(subjectRepo)
 	announcementService := announcementModule.NewService(announcementRepo)
+	analyticsService := analyticsModule.NewService(chatRepo, userRepo)
 
 	uHandler := user.NewHandler(userService)
 	bHandler := batchModule.NewHandler(batchService)
@@ -149,6 +151,7 @@ func main() {
 	cHandler := chatHandler.NewHandler(chatService)
 	subjectHandler := subjectModule.NewHandler(subjectService)
 	announcementHandler := announcementModule.NewHandler(announcementService)
+	analyticsHandler := analyticsModule.NewHandler(analyticsService)
 	liveHandler := streaming.NewHandler(authClient, vertexClient, chatService, ragService, cfg.AuthDevMode)
 
 	// 6. Router & Middleware Stack
@@ -335,6 +338,19 @@ func main() {
 					r.Put("/{id}", announcementHandler.UpdateAnnouncement)
 					r.Delete("/{id}", announcementHandler.DeleteAnnouncement)
 				})
+			})
+
+			// ==========================================
+			// Student Engagement Analytics (Admin & Teacher): per-student progress
+			// and the cross-student leaderboard. Activity/engagement metrics only —
+			// there's no quiz or assessment data in this platform to measure actual
+			// academic mastery with.
+			// ==========================================
+			r.Route("/analytics", func(r chi.Router) {
+				r.Use(middleware.RequireRoles(domain.RoleAdmin, domain.RoleTeacher))
+
+				r.Get("/students/{studentId}", analyticsHandler.GetStudentProgress)
+				r.Get("/leaderboard", analyticsHandler.GetLeaderboard)
 			})
 		})
 	})

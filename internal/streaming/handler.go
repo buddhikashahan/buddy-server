@@ -275,7 +275,7 @@ func (h *Handler) HandleLiveTalk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create a persistent Live Talk conversation session in chat history
-	liveSessionTitle := "🎙️ Live Talk - " + time.Now().Format("Jan 02, 15:04")
+	liveSessionTitle := domain.LiveTalkSessionTitlePrefix + " - " + time.Now().Format("Jan 02, 15:04")
 	savedLiveSession, _ := h.chatService.CreateSession(r.Context(), authUser.UID, liveSessionTitle)
 	var liveSessionID string
 	if savedLiveSession != nil {
@@ -674,6 +674,9 @@ func (h *Handler) generateEmpatheticReply(userPrompt string, visionBytes []byte,
 			userPrompt,
 			attachments,
 			memoryCallback,
+			// No image generation in Live Talk (native or fallback): a spoken-only
+			// session has no chat UI to display a generated image in.
+			false,
 		)
 		if err == nil && resp != nil && resp.ReplyText != "" {
 			clean := strings.ReplaceAll(resp.ReplyText, "###", "")

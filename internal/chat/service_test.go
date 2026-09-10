@@ -186,6 +186,43 @@ func TestChatService_ConversationFlow(t *testing.T) {
 	}
 }
 
+// TestChatService_SendMessage_AttachmentOnlyNoContent guards a voice message (or any
+// attachment sent with no caption) from being rejected outright: SendMessage must only
+// require Content when there are no Attachments at all, since a recorded clip is a
+// complete message on its own.
+func TestChatService_SendMessage_AttachmentOnlyNoContent(t *testing.T) {
+	svc := setupTestChatService()
+	ctx := context.Background()
+	studentID := "stu-voice-001"
+
+	session, err := svc.CreateSession(ctx, studentID, "Voice Only")
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	reply, err := svc.SendMessage(ctx, studentID, session.ID, false, domain.SendMessageRequest{
+		Content: "",
+		Attachments: []domain.Attachment{
+			{
+				Name:       "voice-message.webm",
+				MimeType:   "audio/webm",
+				DataBase64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected an attachment-only message to be accepted, got error: %v", err)
+	}
+	if reply.Sender != domain.SenderModel {
+		t.Errorf("expected sender model, got %s", reply.Sender)
+	}
+
+	// Still must reject a message with neither content nor attachments.
+	if _, err := svc.SendMessage(ctx, studentID, session.ID, false, domain.SendMessageRequest{Content: ""}); err == nil {
+		t.Error("expected an empty message with no attachments to be rejected")
+	}
+}
+
 func TestChatService_UnicodeTitleAndRename(t *testing.T) {
 	svc := setupTestChatService()
 	ctx := context.Background()

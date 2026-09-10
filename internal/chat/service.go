@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -38,7 +39,7 @@ func (s *Service) CreateSession(ctx context.Context, studentID, title string) (*
 	existingSessions, err := s.repo.ListSessions(ctx, studentID, 15)
 	if err == nil {
 		for _, sess := range existingSessions {
-			if sess.MessageCount == 0 && !strings.HasPrefix(sess.Title, "🎙️ Live Talk") {
+			if sess.MessageCount == 0 && !strings.HasPrefix(sess.Title, domain.LiveTalkSessionTitlePrefix) {
 				return sess, nil
 			}
 		}
@@ -106,7 +107,13 @@ func (s *Service) ListMessages(ctx context.Context, studentID, sessionID string,
 // SendMessage processes an incoming user message, grounds it with RAG and Personal Intelligence, and returns Buddy AI's response.
 func (s *Service) SendMessage(ctx context.Context, studentID, sessionID string, isAdmin bool, req domain.SendMessageRequest) (*domain.ChatMessage, error) {
 	v := validator.New()
-	v.Required("content", req.Content)
+	// Content is required UNLESS the message carries at least one attachment (e.g. a
+	// voice recording or an image sent with no caption) — those are a complete message
+	// on their own, so requiring text alongside them would reject a perfectly valid
+	// voice-only send.
+	if len(req.Attachments) == 0 {
+		v.Required("content", req.Content)
+	}
 	if v.HasErrors() {
 		return nil, v.Error()
 	}
@@ -191,6 +198,7 @@ func (s *Service) SendMessage(ctx context.Context, studentID, sessionID string, 
 			req.Content,
 			req.Attachments,
 			memoryCallback,
+			true, // enableImageGeneration — always on in text chat when Vertex AI is available
 		)
 		if err != nil {
 			// Fallback with rich Markdown format
@@ -211,11 +219,12 @@ func (s *Service) SendMessage(ctx context.Context, studentID, sessionID string, 
 
 	// 3. Save Model Message
 	modelMsg := &domain.ChatMessage{
-		ID:        uuid.New().String(),
-		SessionID: session.ID,
-		Sender:    domain.SenderModel,
-		Content:   aiResponse.ReplyText,
-		CreatedAt: time.Now(),
+		ID:              uuid.New().String(),
+		SessionID:       session.ID,
+		Sender:          domain.SenderModel,
+		Content:         aiResponse.ReplyText,
+		ImageGenerating: aiResponse.PendingImagePrompt != "",
+		CreatedAt:       time.Now(),
 	}
 	if err := s.repo.SaveMessage(ctx, modelMsg); err != nil {
 		return nil, fmt.Errorf("failed to save model message: %w", err)
@@ -254,6 +263,16 @@ func (s *Service) SendMessage(ctx context.Context, studentID, sessionID string, 
 	go func(sess domain.ChatSession) {
 		_ = s.repo.UpdateSession(context.Background(), &sess)
 	}(*session)
+
+	// Image generation is slow (several seconds) and modelMsg has already been saved
+	// and is about to be returned to the student with its text reply — generating the
+	// image now, in the background, is what keeps that reply from being held up. The
+	// frontend polls while ImageGenerating is true and picks up the attachment once
+	// completeImageGeneration re-saves this same message with it (or gives up
+	// gracefully if generation fails).
+	if aiResponse.PendingImagePrompt != "" {
+		go s.completeImageGeneration(modelMsg.ID, aiResponse.PendingImagePrompt)
+	}
 
 	return modelMsg, nil
 }
@@ -430,6 +449,76 @@ func (s *Service) DeletePersonalMemoryFact(ctx context.Context, studentID string
 
 	slog.Info("[Memory Management] Deleted memory fact", slog.String("student_id", studentID), slog.String("fact", factText))
 	return mem, nil
+}
+
+// generateEducationalImage runs Gemini image generation for the
+// "generate_educational_image" chat tool. Called from a background goroutine kicked
+// off by SendMessage after the text reply is already saved and returned — see
+// completeImageGeneration. Unlike a search result, a generated image only exists as
+// raw bytes with nowhere already hosting it, so — matching how a directly-uploaded
+// chat attachment already works (domain.Attachment.DataBase64) — it's embedded inline
+// as a base64 data URI rather than uploaded to Cloud Storage first.
+func (s *Service) generateEducationalImage(ctx context.Context, prompt string) ([]domain.Attachment, error) {
+	img, err := s.vertexClient.GenerateEducationalImage(ctx, prompt)
+	if err != nil {
+		return nil, err
+	}
+	if img == nil {
+		return nil, fmt.Errorf("image generation returned no image")
+	}
+
+	// Raw base64 only, no "data:...;base64," prefix — the frontend builds that prefix
+	// itself from mime_type + data_base64 when rendering (see app/student/page.tsx),
+	// so a stored data URI here would end up double-prefixed and fail to render.
+	attachment := domain.Attachment{
+		Name:       "generated-illustration." + extensionForImageMime(img.MimeType),
+		MimeType:   img.MimeType,
+		DataBase64: base64.StdEncoding.EncodeToString(img.Data),
+		SizeBytes:  int64(len(img.Data)),
+	}
+	return []domain.Attachment{attachment}, nil
+}
+
+// completeImageGeneration runs in the background after SendMessage has already saved
+// and returned modelMsg with ImageGenerating set. It generates the requested image and
+// re-saves the same message with Attachments populated (and ImageGenerating cleared) —
+// or, on failure, just clears ImageGenerating with no attachments, so the frontend's
+// polling (see app/student/page.tsx) stops waiting instead of polling forever. Takes
+// its own context rather than the original request's, since that one is canceled the
+// moment the HTTP handler that started this goroutine returns.
+func (s *Service) completeImageGeneration(messageID, prompt string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	atts, err := s.generateEducationalImage(ctx, prompt)
+	if err != nil {
+		slog.Warn("[Educational Images] generation failed", slog.String("prompt", prompt), slog.String("error", err.Error()))
+	}
+
+	msg, getErr := s.repo.GetMessage(ctx, messageID)
+	if getErr != nil || msg == nil {
+		slog.Error("[Educational Images] could not re-fetch message to attach generated image", slog.String("message_id", messageID))
+		return
+	}
+	msg.ImageGenerating = false
+	msg.Attachments = atts
+	if saveErr := s.repo.SaveMessage(ctx, msg); saveErr != nil {
+		slog.Error("[Educational Images] failed to save generated image onto message", slog.String("message_id", messageID), slog.String("error", saveErr.Error()))
+	}
+}
+
+// extensionForImageMime maps a generated image's MIME type to a sensible file
+// extension for its display name; unrecognized types fall back to .png since that's
+// what Gemini image generation returns by default.
+func extensionForImageMime(mimeType string) string {
+	switch mimeType {
+	case "image/jpeg", "image/jpg":
+		return "jpg"
+	case "image/webp":
+		return "webp"
+	default:
+		return "png"
+	}
 }
 
 // SavePersonalMemoryFact records a specific personal fact for a student into both Firestore Personal Intelligence

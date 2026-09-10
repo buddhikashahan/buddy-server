@@ -13,6 +13,15 @@ import (
 )
 
 // GenerateChatResponse generates an empathetic, structured Markdown completion with Gemini.
+//
+// enableImageGeneration controls whether the "generate_educational_image" tool is
+// offered to the model at all (text chat does; Live Talk's fallback path does not,
+// since a spoken-only session has nowhere to show an image). This method never
+// actually runs image generation itself — it's slow enough (several seconds) that
+// doing so would hold up the text reply — it only detects that the model called the
+// tool and reports the requested prompt back via StructuredAIResponse.PendingImagePrompt
+// for the caller (chat.Service) to generate in the background after the text reply is
+// already on its way to the student.
 func (c *Client) GenerateChatResponse(
 	ctx context.Context,
 	systemPrompt string,
@@ -22,7 +31,10 @@ func (c *Client) GenerateChatResponse(
 	userMessage string,
 	attachments []domain.Attachment,
 	onMemoryToolCall func(category, fact, details string) error,
+	enableImageGeneration bool,
 ) (*domain.StructuredAIResponse, error) {
+	imageToolsEnabled := enableImageGeneration
+
 	// 1. Compose System Instructions
 	var systemInstructions strings.Builder
 	systemInstructions.WriteString(systemPrompt)
@@ -50,6 +62,10 @@ func (c *Client) GenerateChatResponse(
 	systemInstructions.WriteString("\n\n")
 	systemInstructions.WriteString(MemoryToolRulesBlock)
 	systemInstructions.WriteString("\n\n")
+	if imageToolsEnabled {
+		systemInstructions.WriteString(EducationalImageToolRulesBlock)
+		systemInstructions.WriteString("\n\n")
+	}
 	systemInstructions.WriteString(SecurityConstraintsBlock)
 	systemInstructions.WriteString("\n\n")
 
@@ -63,6 +79,11 @@ func (c *Client) GenerateChatResponse(
 		systemInstructions.WriteString("\n\n")
 	}
 
+	tools := []*genai.Tool{MemoryToolDeclaration()}
+	if imageTool := ImageGenerationToolDeclaration(enableImageGeneration); imageTool != nil {
+		tools = append(tools, imageTool)
+	}
+
 	temp := float32(0.7)
 	cfg := &genai.GenerateContentConfig{
 		SystemInstruction: &genai.Content{
@@ -71,7 +92,7 @@ func (c *Client) GenerateChatResponse(
 			},
 		},
 		Temperature: &temp,
-		Tools:       []*genai.Tool{MemoryToolDeclaration()},
+		Tools:       tools,
 	}
 
 	// 2. Build Multi-turn Conversation Contents
@@ -117,8 +138,15 @@ func (c *Client) GenerateChatResponse(
 		}
 	}
 
+	queryText := userMessage
+	if strings.TrimSpace(queryText) == "" && len(currentParts) > 0 {
+		// A voice-only (or attachment-only) send has no typed text at all — tell the
+		// model explicitly what it's looking at instead of handing it an empty
+		// <student_query>, which otherwise reads like the student sent nothing.
+		queryText = "(The student sent this message as a voice recording / attachment with no typed text. Listen to or examine the attached content and respond to it directly.)"
+	}
 	currentParts = append(currentParts, &genai.Part{
-		Text: fmt.Sprintf("<student_query>\n%s\n</student_query>", userMessage),
+		Text: fmt.Sprintf("<student_query>\n%s\n</student_query>", queryText),
 	})
 
 	contents = append(contents, &genai.Content{
@@ -128,6 +156,7 @@ func (c *Client) GenerateChatResponse(
 
 	// 4. Call Vertex AI via Google GenAI SDK (Single-Turn with Tool Call Support)
 	var markdownReply string
+	var pendingImagePrompt string
 
 	for turn := 0; turn < 2; turn++ {
 		result, err := c.client.Models.GenerateContent(ctx, c.modelName, contents, cfg)
@@ -152,24 +181,44 @@ func (c *Client) GenerateChatResponse(
 			}
 		}
 
-		// Asynchronously trigger memory saving if tool call was generated
+		// Handle each tool call. save_student_memory is fire-and-forget (nothing
+		// about its result needs to reach the model or the reply), but the image
+		// tools run synchronously and their results feed straight into this same
+		// turn's function-response parts — see the doc comment on this method for why.
+		var respParts []*genai.Part
 		for _, fc := range functionCalls {
-			if fc.Name == "save_student_memory" && onMemoryToolCall != nil {
-				category := ""
-				fact := ""
-				details := ""
-				if v, ok := fc.Args["category"].(string); ok {
-					category = v
+			switch fc.Name {
+			case "save_student_memory":
+				if onMemoryToolCall == nil {
+					continue
 				}
-				if v, ok := fc.Args["fact"].(string); ok {
-					fact = v
-				}
-				if v, ok := fc.Args["details"].(string); ok {
-					details = v
-				}
+				category, _ := fc.Args["category"].(string)
+				fact, _ := fc.Args["fact"].(string)
+				details, _ := fc.Args["details"].(string)
 				go func(cat, f, det string) {
 					_ = onMemoryToolCall(cat, f, det)
 				}(category, fact, details)
+				respParts = append(respParts, functionResponsePart(fc, map[string]any{
+					"status": "success", "saved": true, "message": "Student personal memory context saved.",
+				}))
+
+			case "generate_educational_image":
+				if !enableImageGeneration {
+					continue
+				}
+				prompt, _ := fc.Args["prompt"].(string)
+				if strings.TrimSpace(prompt) == "" {
+					continue
+				}
+				// Just record the request — actually generating happens in the
+				// background after this method returns (see the doc comment above).
+				// The response handed back to Gemini here is an immediate
+				// acknowledgment, not a report of a real result, since no image has
+				// been generated yet at this point.
+				pendingImagePrompt = prompt
+				respParts = append(respParts, functionResponsePart(fc, map[string]any{
+					"status": "success", "message": "Image generation started; it will appear shortly after your reply.",
+				}))
 			}
 		}
 
@@ -180,20 +229,8 @@ func (c *Client) GenerateChatResponse(
 		}
 
 		// Fallback only if Gemini returned ONLY function calls without conversational text
-		if len(functionCalls) > 0 && turn == 0 {
+		if len(functionCalls) > 0 && turn == 0 && len(respParts) > 0 {
 			contents = append(contents, candidateContent)
-			var respParts []*genai.Part
-			for _, fc := range functionCalls {
-				respPart := genai.NewPartFromFunctionResponse(fc.Name, map[string]any{
-					"status":  "success",
-					"saved":   true,
-					"message": "Student personal memory context saved.",
-				})
-				if fc.ID != "" && respPart.FunctionResponse != nil {
-					respPart.FunctionResponse.ID = fc.ID
-				}
-				respParts = append(respParts, respPart)
-			}
 			contents = append(contents, &genai.Content{
 				Role:  "user",
 				Parts: respParts,
@@ -211,10 +248,22 @@ func (c *Client) GenerateChatResponse(
 	markdownReply = stripReferenceSections(markdownReply)
 
 	return &domain.StructuredAIResponse{
-		ReplyText:     markdownReply,
-		EmotionalTone: "Empathetic, Wise & Supportive",
-		Sources:       ragSources,
+		ReplyText:          markdownReply,
+		EmotionalTone:      "Empathetic, Wise & Supportive",
+		Sources:            ragSources,
+		PendingImagePrompt: pendingImagePrompt,
 	}, nil
+}
+
+// functionResponsePart builds the genai.Part Gemini expects back for a given function
+// call, carrying its call ID through so the model can match the response to the right
+// invocation.
+func functionResponsePart(fc *genai.FunctionCall, response map[string]any) *genai.Part {
+	part := genai.NewPartFromFunctionResponse(fc.Name, response)
+	if fc.ID != "" && part.FunctionResponse != nil {
+		part.FunctionResponse.ID = fc.ID
+	}
+	return part
 }
 
 // GenerateSessionTitle calls Gemini to generate a concise, natural 2-5 word session title.
@@ -382,4 +431,93 @@ Output ONLY valid JSON. No markdown ticks, no commentary.`, userMessage)
 	}
 
 	return &data, nil
+}
+
+// GeneratedImage is one image produced by GenerateEducationalImage.
+type GeneratedImage struct {
+	Data     []byte
+	MimeType string
+}
+
+// GenerateEducationalImage produces an original illustration/diagram via Gemini's
+// image generation model, for the "generate_educational_image" chat tool — the
+// fallback used only when Google Image Search wouldn't already have a suitable real
+// photo (a novel diagram, a specific custom illustration, a conceptual visualization
+// that doesn't exist as a real photo). Uses a separate model from ordinary chat
+// (VERTEX_IMAGE_MODEL, see client.go) since image generation is a distinct capability
+// not every Gemini model supports.
+func (c *Client) GenerateEducationalImage(ctx context.Context, prompt string) (*GeneratedImage, error) {
+	if c == nil || c.imageClient == nil {
+		return nil, fmt.Errorf("vertex client unavailable")
+	}
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return nil, fmt.Errorf("prompt is required")
+	}
+
+	// Defense in depth: the caller (chat.Service, gated by the calling model's own
+	// EducationalImageToolRulesBlock instructions) should already only reach this with
+	// an academic request, but this constraint is restated directly to the image
+	// generation model itself too, since it makes the actual generation call.
+	fullPrompt := fmt.Sprintf(`Generate a clear, accurate STRICTLY ACADEMIC/EDUCATIONAL illustration for a student: %s
+
+This must be genuine educational content only — a textbook-style diagram, scientific/technical illustration, or conceptual visualization tied to academic or vocational learning. Refuse (by generating nothing resembling the request) if the request is not academic in nature: entertainment, memes, decorative art, or a depiction of a real, identifiable person.
+
+Style: clean textbook-diagram quality, appropriate for an academic/vocational training context. Label parts only where labels are essential to understanding. No decorative text, watermarks, or logos.`, prompt)
+
+	cfg := &genai.GenerateContentConfig{
+		ResponseModalities: []string{string(genai.ModalityText), string(genai.ModalityImage)},
+	}
+
+	contents := []*genai.Content{
+		{
+			Role:  "user",
+			Parts: []*genai.Part{{Text: fullPrompt}},
+		},
+	}
+
+	// model=%q logged on every error below: the single most common cause of a silent
+	// "stuck generating" failure is VERTEX_IMAGE_MODEL naming a model that doesn't
+	// exist, isn't enabled, or isn't available in this client's region (see
+	// VERTEX_IMAGE_LOCATION in client.go) — that comes back as an ordinary API error
+	// from GenerateContent, not something distinguishable in Go without inspecting the
+	// message, so surfacing the exact model/error together is what makes it diagnosable.
+	result, err := c.imageClient.Models.GenerateContent(ctx, c.imageModelName, contents, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("image generation request failed (model=%q): %w", c.imageModelName, err)
+	}
+
+	if result.PromptFeedback != nil && result.PromptFeedback.BlockReason != "" {
+		return nil, fmt.Errorf("image generation blocked before generating (model=%q, reason=%s): %s",
+			c.imageModelName, result.PromptFeedback.BlockReason, result.PromptFeedback.BlockReasonMessage)
+	}
+	if len(result.Candidates) == 0 || result.Candidates[0].Content == nil {
+		return nil, fmt.Errorf("image generation returned no candidates (model=%q)", c.imageModelName)
+	}
+
+	candidate := result.Candidates[0]
+	var responseText strings.Builder
+	for _, part := range candidate.Content.Parts {
+		if part.InlineData != nil && len(part.InlineData.Data) > 0 {
+			mimeType := part.InlineData.MIMEType
+			if mimeType == "" {
+				mimeType = "image/png"
+			}
+			return &GeneratedImage{Data: part.InlineData.Data, MimeType: mimeType}, nil
+		}
+		if part.Text != "" {
+			responseText.WriteString(part.Text)
+		}
+	}
+
+	// No image part came back. This usually means the model declined (safety
+	// filtering, or it judged the request non-academic per our own prompt
+	// instruction) and explained why in its text instead — surface that reason
+	// rather than a bare "no image" if we have it.
+	if responseText.Len() > 0 {
+		return nil, fmt.Errorf("model did not return an image (model=%q, finish_reason=%s): %s",
+			c.imageModelName, candidate.FinishReason, strings.TrimSpace(responseText.String()))
+	}
+	return nil, fmt.Errorf("model did not return an image (model=%q, finish_reason=%s, finish_message=%s)",
+		c.imageModelName, candidate.FinishReason, candidate.FinishMessage)
 }

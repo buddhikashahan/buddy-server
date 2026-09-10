@@ -36,6 +36,7 @@ func TestVertexAI_LiveMarkdownResponse(t *testing.T) {
 		"Hi Buddy, can you give me 3 practical tips to manage exam stress in markdown?",
 		nil,
 		nil,
+		false,
 	)
 
 	if err != nil {

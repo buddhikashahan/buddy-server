@@ -11,11 +11,13 @@ import (
 
 // Client wraps Google GenAI SDK client for Vertex AI.
 type Client struct {
-	client     *genai.Client
-	liveClient *genai.Client
-	modelName  string
-	projectID  string
-	location   string
+	client         *genai.Client
+	liveClient     *genai.Client
+	imageClient    *genai.Client
+	modelName      string
+	imageModelName string
+	projectID      string
+	location       string
 }
 
 // NewClient initializes a new Vertex AI GenAI client using official Google GenAI SDK.
@@ -62,12 +64,45 @@ func NewClient(ctx context.Context, projectID, location, credentialsFile, modelN
 		}
 	}
 
+	imageModelName := os.Getenv("VERTEX_IMAGE_MODEL")
+	if imageModelName == "" {
+		imageModelName = "gemini-3.1-flash-image"
+	}
+
+	// gemini-3.1-flash-image (Nano Banana 2) is served from the "global" Vertex AI
+	// endpoint specifically — confirmed by hitting a real "us-central1" deployment
+	// and getting back an explicit 404 "model not found in this region". This is the
+	// opposite requirement from the live-audio model (which needs us-central1, see
+	// liveLocation above), so the two can't share a default.
+	imageLocation := os.Getenv("VERTEX_IMAGE_LOCATION")
+	if imageLocation == "" {
+		imageLocation = "global"
+	}
+
+	var imageClient *genai.Client
+	if location == imageLocation {
+		imageClient = client
+	} else {
+		ic, iErr := genai.NewClient(ctx, &genai.ClientConfig{
+			Project:  projectID,
+			Location: imageLocation,
+			Backend:  genai.BackendVertexAI,
+		})
+		if iErr == nil {
+			imageClient = ic
+		} else {
+			imageClient = client
+		}
+	}
+
 	return &Client{
-		client:     client,
-		liveClient: liveClient,
-		modelName:  modelName,
-		projectID:  projectID,
-		location:   location,
+		client:         client,
+		liveClient:     liveClient,
+		imageClient:    imageClient,
+		modelName:      modelName,
+		imageModelName: imageModelName,
+		projectID:      projectID,
+		location:       location,
 	}, nil
 }
 

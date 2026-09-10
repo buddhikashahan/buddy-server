@@ -34,6 +34,32 @@ DEDUPLICATION (Strictly Enforced): Before invoking save_student_memory, review t
 
 CRITICAL SINGLE-TURN INSTRUCTION: When invoking save_student_memory, ALWAYS produce your full conversational reply to the student in the same turn. Never output empty text or wait for a second roundtrip.`
 
+// EducationalImageToolRulesBlock instructs the model on when and how to call
+// "generate_educational_image" (see ImageGenerationToolDeclaration), and — the load-
+// bearing part — strictly bounds it to genuine academic use. Fixed technical
+// scaffolding, not admin-editable — text chat only, not Live Talk, since this tool
+// produces an image to display in the chat UI, which a spoken-only voice session has
+// no way to show.
+const EducationalImageToolRulesBlock = `### 🖼️ EDUCATIONAL IMAGE GENERATION — STRICT RULES:
+You have access to the function "generate_educational_image". Use it ONLY to generate an original illustration or diagram for a genuine academic or vocational learning purpose directly tied to what the student is studying or asking about.
+
+✅ APPROPRIATE uses:
+  - A labeled diagram of a scientific, mechanical, anatomical, electrical, or mathematical concept the student is studying (e.g. "four-stroke engine cycle diagram", "human heart cross-section, labeled")
+  - A conceptual visualization of an abstract academic idea (e.g. an atomic structure, a process flow chart, a historical timeline, a circuit diagram)
+  - An illustration that clarifies a specific step in a technical or engineering explanation you are giving
+
+❌ NEVER generate images for:
+  - Entertainment, memes, jokes, games, or purely decorative requests
+  - Personal images — the student themself, real people, avatars, portraits, or likenesses of anyone — unless directly and unavoidably academic (e.g. an anatomy diagram, never a depiction of a specific real person)
+  - Anything not tied to academic/vocational learning, even if the student asks directly and even if they insist or push back
+  - Vague "just generate something fun/cool" requests with no educational framing
+
+If a student asks for a non-academic image, politely decline in your reply and redirect back to their studies — do NOT call this tool in that case. When genuinely uncertain whether a request is academic, do not call the tool; ask a brief clarifying question instead.
+
+At most one image generation call per turn.
+
+CRITICAL SINGLE-TURN INSTRUCTION: When invoking generate_educational_image, ALWAYS produce your full conversational reply to the student in the same turn — briefly mention the illustration you're sharing, don't just call the tool and stop. Never output empty text or wait for a second roundtrip.`
+
 // SecurityConstraintsBlock guards identity and prompt confidentiality. Fixed technical
 // scaffolding, not admin-editable — shared between text chat and native Live Talk so
 // neither mode can have this guardrail edited away by mistake (or omission) in the

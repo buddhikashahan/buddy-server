@@ -131,3 +131,37 @@ func LiveTalkToolsDeclaration() *genai.Tool {
 		},
 	}
 }
+
+// ImageGenerationToolDeclaration returns the tool declaration that lets Buddy generate
+// an original illustration/diagram with Gemini image generation to help a student
+// visualize an academic concept — the platform's only source of chat visuals; there is
+// deliberately no image search tool (removed after evaluation). Returns nil when
+// include is false, so callers can omit it from Tools entirely (e.g. Live Talk, which
+// has no chat UI to display an image in) rather than send an empty declaration.
+func ImageGenerationToolDeclaration(include bool) *genai.Tool {
+	if !include {
+		return nil
+	}
+	return &genai.Tool{
+		FunctionDeclarations: []*genai.FunctionDeclaration{
+			{
+				Name: "generate_educational_image",
+				Description: "Generate an original illustration or diagram with Gemini image generation, for " +
+					"STRICTLY ACADEMIC/EDUCATIONAL purposes only — see the EDUCATIONAL IMAGE GENERATION rules in " +
+					"your instructions for exactly what qualifies. Never call this for entertainment, personal, " +
+					"decorative, or otherwise non-academic image requests.",
+				Parameters: &genai.Schema{
+					Type: genai.TypeObject,
+					Properties: map[string]*genai.Schema{
+						"prompt": {
+							Type: genai.TypeString,
+							Description: "A clear, specific description of the educational illustration to generate, " +
+								"including what should be labeled or emphasized.",
+						},
+					},
+					Required: []string{"prompt"},
+				},
+			},
+		},
+	}
+}
