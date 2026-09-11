@@ -164,9 +164,14 @@ type UpdateStaffRequest struct {
 	Permissions    *[]string `json:"permissions,omitempty"`
 }
 
-// UpdateStatusRequest payload to activate or suspend a user.
+// UpdateStatusRequest payload to activate or suspend a user, optionally reassigning
+// their role in the same call — this is how an admin approves a pending account
+// (typically an auto-provisioned first-time Google sign-in, always created as a
+// student) while also correcting its role to teacher/admin, since there's no other
+// way to promote an account past self-registration's student-only default.
 type UpdateStatusRequest struct {
 	Status UserStatus `json:"status"`
+	Role   Role       `json:"role,omitempty"`
 	Reason string     `json:"reason,omitempty"`
 }
 

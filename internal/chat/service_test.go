@@ -186,6 +186,35 @@ func TestChatService_ConversationFlow(t *testing.T) {
 	}
 }
 
+// TestChatService_DeleteSession_StudentForbidden guards the rule that a student can no
+// longer delete their own chat history — only an admin may delete a session.
+func TestChatService_DeleteSession_StudentForbidden(t *testing.T) {
+	svc := setupTestChatService()
+	ctx := context.Background()
+	studentID := "stu-delete-001"
+
+	session, err := svc.CreateSession(ctx, studentID, "A Conversation")
+	if err != nil {
+		t.Fatalf("failed to create session: %v", err)
+	}
+
+	// The student (isAdmin=false) attempting to delete their own session must be
+	// rejected outright.
+	if err := svc.DeleteSession(ctx, studentID, session.ID, false); err == nil {
+		t.Error("expected a student deleting their own session to be forbidden")
+	}
+
+	// Confirm it's actually still there.
+	if _, err := svc.GetSession(ctx, studentID, session.ID, false); err != nil {
+		t.Errorf("expected session to still exist after the forbidden delete attempt, got error: %v", err)
+	}
+
+	// An admin must still be able to delete it.
+	if err := svc.DeleteSession(ctx, studentID, session.ID, true); err != nil {
+		t.Errorf("expected admin to be able to delete the session, got error: %v", err)
+	}
+}
+
 // TestChatService_SendMessage_AttachmentOnlyNoContent guards a voice message (or any
 // attachment sent with no caption) from being rejected outright: SendMessage must only
 // require Content when there are no Attachments at all, since a recorded clip is a

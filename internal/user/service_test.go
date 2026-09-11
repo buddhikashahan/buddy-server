@@ -127,6 +127,39 @@ func TestService_UpdateStatus(t *testing.T) {
 	}
 }
 
+// TestService_ChangeRole_StudentToTeacherMigratesProfile guards the exact scenario
+// ChangeRole exists for: a student account (e.g. auto-provisioned from a first-time
+// Google sign-in) that an admin needs to promote to teacher. It must end up with a
+// usable StaffProfile even though it never had one, and must actually be readable via
+// GetStaff afterward (not just have its Role field flipped).
+func TestService_ChangeRole_StudentToTeacherMigratesProfile(t *testing.T) {
+	svc := setupTestService()
+	ctx := context.Background()
+
+	created, err := svc.CreateStudent(ctx, domain.CreateStudentRequest{
+		Email:              "promote.me@example.com",
+		Password:           "password123",
+		DisplayName:        "Promote Me",
+		RegistrationNumber: "STU-003",
+		Grade:              "12th Grade",
+	})
+	if err != nil {
+		t.Fatalf("failed to create student: %v", err)
+	}
+
+	if err := svc.ChangeRole(ctx, created.ID, domain.RoleTeacher); err != nil {
+		t.Fatalf("failed to change role: %v", err)
+	}
+
+	staff, err := svc.GetStaff(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("expected promoted account to be readable as staff, got error: %v", err)
+	}
+	if staff.Role != domain.RoleTeacher {
+		t.Errorf("expected role teacher, got %s", staff.Role)
+	}
+}
+
 func TestService_DeleteUser_AbortsIfAuthDeletionFails(t *testing.T) {
 	repo := user.NewMemoryRepository()
 	authClient := &failingAuthClient{DevAuthClient: &platformAuth.DevAuthClient{}}

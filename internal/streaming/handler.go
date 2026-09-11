@@ -254,13 +254,12 @@ func (h *Handler) HandleLiveTalk(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			Tools: []*genai.Tool{platformVertex.LiveTalkToolsDeclaration()},
-			// The student's side of the conversation is captured via the
-			// "record_user_message" function call instead of InputAudioTranscription:
-			// that automatic ASR-based transcription proved unreliable (especially
-			// across languages/accents), whereas having the model itself report what
-			// it understood the student to have said is far more accurate. The
-			// model's own spoken replies, by contrast, are reliably transcribed by
-			// OutputAudioTranscription, so that one stays.
+			// The student's own words are deliberately never transcribed into chat
+			// history at all (see extractUserMemory below) — both an automatic
+			// ASR-transcription approach and a later function-call approach were tried
+			// and dropped as unreliable/unwanted. Buddy's own spoken replies, by
+			// contrast, are reliably transcribed via OutputAudioTranscription, so that
+			// one stays enabled.
 			OutputAudioTranscription: &genai.AudioTranscriptionConfig{},
 		}
 
@@ -274,12 +273,23 @@ func (h *Handler) HandleLiveTalk(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Create a persistent Live Talk conversation session in chat history
-	liveSessionTitle := domain.LiveTalkSessionTitlePrefix + " - " + time.Now().Format("Jan 02, 15:04")
-	savedLiveSession, _ := h.chatService.CreateSession(r.Context(), authUser.UID, liveSessionTitle)
+	// The Live Talk conversation session is only created in chat history the moment
+	// there's an actual reply worth saving — not eagerly on connect. Creating it
+	// upfront meant every single Live Talk open left behind a session in the
+	// student's history, even one where the student said nothing and just closed
+	// the call again, and the canned greeting below always counted as that "first
+	// message" regardless. sessionCreateOnce makes the creation lazy and one-time.
 	var liveSessionID string
-	if savedLiveSession != nil {
-		liveSessionID = savedLiveSession.ID
+	var sessionCreateOnce sync.Once
+	ensureLiveSession := func() string {
+		sessionCreateOnce.Do(func() {
+			liveSessionTitle := domain.LiveTalkSessionTitlePrefix + " - " + time.Now().Format("Jan 02, 15:04")
+			savedLiveSession, err := h.chatService.CreateSession(context.Background(), authUser.UID, liveSessionTitle)
+			if err == nil && savedLiveSession != nil {
+				liveSessionID = savedLiveSession.ID
+			}
+		})
+		return liveSessionID
 	}
 
 	// Live Talk chat history only ever saves Buddy's spoken replies (recordModelTurn
@@ -297,13 +307,18 @@ func (h *Handler) HandleLiveTalk(w http.ResponseWriter, r *http.Request) {
 
 	recordModelTurn := func(text string) {
 		trimmed := strings.TrimSpace(text)
-		if liveSessionID != "" && trimmed != "" {
-			_ = h.chatService.SaveLiveMessage(context.Background(), liveSessionID, domain.SenderModel, trimmed)
+		if trimmed == "" {
+			return
+		}
+		if sid := ensureLiveSession(); sid != "" {
+			_ = h.chatService.SaveLiveMessage(context.Background(), sid, domain.SenderModel, trimmed)
 		}
 	}
 
+	// The canned opening greeting is spoken/shown to the student (below) but
+	// deliberately never passed to recordModelTurn — it's not a real reply, so it
+	// must not be what creates the session or count as its "starting message".
 	greetingText := "Ayubowan! I am Buddy. I can hear you clearly and see your screen or camera. How can I guide you today?"
-	recordModelTurn(greetingText)
 
 	// Send "ready" signal to notify frontend the session is established and listening
 	_ = safeWriteJSON(ServerMessage{
@@ -377,9 +392,9 @@ func (h *Handler) HandleLiveTalk(w http.ResponseWriter, r *http.Request) {
 							Type:    "turn_complete",
 							IsFinal: true,
 						})
-						// The student's turn was already saved via the
-						// "record_user_message" tool call as soon as the model made
-						// it — flushing here only covers Buddy's own reply.
+						// The student's turn is never saved as chat history at all (see
+						// extractUserMemory above) — this flush only covers Buddy's own
+						// spoken reply.
 						if modelTurnBuilder.Len() > 0 {
 							recordModelTurn(modelTurnBuilder.String())
 							modelTurnBuilder.Reset()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -360,6 +361,76 @@ func (s *Service) UpdateStatus(ctx context.Context, id string, status domain.Use
 	// Disable user in Firebase Auth if suspended
 	disabled := status == domain.StatusSuspended
 	_ = s.authClient.UpdateUserStatus(ctx, id, disabled)
+	return nil
+}
+
+// ChangeRole reassigns a user's role — most commonly used when approving a pending
+// account that auto-provisioned as a student (e.g. a first-time Google sign-in, see
+// auth.Handler.syncUserRecord) but should actually be a teacher or admin. Self-service
+// sign-in has no path to become staff on its own, so this admin action is the only way
+// to promote one of those accounts without asking the person to register a second time
+// under a different email.
+//
+// It migrates the user to whatever profile type their new role expects, creating a
+// blank one if they don't already have it (a student who becomes staff won't have a
+// StaffProfile yet, and vice versa — their old profile is left in place rather than
+// deleted, since it's harmless unused data and deleting it risks losing something an
+// admin meant to keep). It also updates the Firebase Auth custom "role" claim: every
+// protected API request is authorized against that JWT claim, not Firestore (see
+// middleware.Authenticate), so a role change that only touched Firestore would
+// silently have no effect on what the account can actually do until its next
+// SetCustomUserClaims — or worse, appear to work in the admin panel while every real
+// request still runs under the old role.
+func (s *Service) ChangeRole(ctx context.Context, id string, newRole domain.Role) error {
+	if !newRole.IsValid() {
+		return domain.ErrInvalidInput
+	}
+
+	user, err := s.repo.GetUserByID(ctx, id)
+	if err != nil {
+		return err
+	}
+
+	if user.Role != newRole {
+		user.Role = newRole
+		user.UpdatedAt = time.Now()
+		if err := s.repo.UpdateUser(ctx, user); err != nil {
+			return fmt.Errorf("failed to update user role: %w", err)
+		}
+	}
+
+	switch newRole {
+	case domain.RoleStudent:
+		if _, err := s.repo.GetStudentProfile(ctx, id); err != nil {
+			now := time.Now()
+			_ = s.repo.CreateStudentProfile(ctx, &domain.StudentProfile{
+				UserID:            id,
+				EnrolledCourseIDs: make([]string, 0),
+				CreatedAt:         now,
+				UpdatedAt:         now,
+			})
+		}
+	case domain.RoleTeacher, domain.RoleAdmin:
+		if _, err := s.repo.GetStaffProfile(ctx, id); err != nil {
+			now := time.Now()
+			_ = s.repo.CreateStaffProfile(ctx, &domain.StaffProfile{
+				UserID:      id,
+				Designation: string(newRole),
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			})
+		}
+	}
+
+	if err := s.authClient.SetCustomUserClaims(ctx, id, map[string]interface{}{"role": string(newRole)}); err != nil {
+		// Best-effort: the Firestore role change (the source of truth the admin panel
+		// and /auth/verify both read) already succeeded above, but flag this loudly —
+		// the account won't actually get its new permissions on protected API routes
+		// until this succeeds, typically on the next sign-in retry.
+		slog.Error("[User] failed to sync Firebase Auth custom role claim after role change",
+			slog.String("uid", id), slog.String("new_role", string(newRole)), slog.String("error", err.Error()))
+	}
+
 	return nil
 }
 

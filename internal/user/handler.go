@@ -207,6 +207,17 @@ func (h *Handler) UpdateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A role is only ever included when approving a pending account that needs
+	// reassigning away from its auto-provisioned student default (see
+	// user.Service.ChangeRole) — apply it before the status change so a freshly
+	// (re)approved account is already under its correct role.
+	if req.Role != "" {
+		if err := h.service.ChangeRole(r.Context(), id, req.Role); err != nil {
+			response.HandleError(w, err)
+			return
+		}
+	}
+
 	if err := h.service.UpdateStatus(r.Context(), id, req.Status); err != nil {
 		response.HandleError(w, err)
 		return

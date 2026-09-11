@@ -84,8 +84,15 @@ func (s *Service) ListSessions(ctx context.Context, studentID string, limit int)
 	return s.repo.ListSessions(ctx, studentID, limit)
 }
 
-// DeleteSession verifies session ownership and deletes the session.
+// DeleteSession verifies session ownership and deletes the session. Deleting chat
+// history is admin-only — a student can no longer delete their own sessions (an
+// earlier version allowed any owner to delete their own session; that let students
+// erase conversations a teacher/admin might later need to review).
 func (s *Service) DeleteSession(ctx context.Context, studentID, sessionID string, isAdmin bool) error {
+	if !isAdmin {
+		return domain.ErrForbidden
+	}
+
 	session, err := s.GetSession(ctx, studentID, sessionID, isAdmin)
 	if err != nil {
 		return err
